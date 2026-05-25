@@ -26,7 +26,7 @@ def run_server():
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    bot.reply_to(message, "Bonjour ! Demande-moi un pronostic sportif!")
+    bot.reply_to(message, "Bonjour! Demande-moi un pronostic sportif!")
 
 @bot.message_handler(func=lambda m: True)
 def repondre(message):
