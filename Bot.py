@@ -1,8 +1,9 @@
+import os
 import telebot
 import google.generativeai as genai
 
-TELEGRAM_TOKEN = "8960918325:AAHNq2C8H_hQ8HXX64jFdpvfQ_YaA5Ac4Ew"
-GEMINI_API_KEY = "ta_clé_gemini_ici"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel("gemini-1.5-flash")
@@ -15,7 +16,7 @@ def start(message):
 @bot.message_handler(func=lambda m: True)
 def repondre(message):
     reponse = model.generate_content(
-        f"Tu es un expert en paris sportifs. Réponds en français : {message.text}"
+        f"Tu es un expert en paris sportifs. Reponds en francais : {message.text}"
     )
     bot.reply_to(message, reponse.text)
 
