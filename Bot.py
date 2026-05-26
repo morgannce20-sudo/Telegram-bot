@@ -32,7 +32,7 @@ def repondre(message):
     try:
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": f"Tu es un expert en paris sportifs. Reponds en francais : {message.text}"}],
-            model="llama3-8b-8192",
+            model="llama-3.3-70b-versatile",
         )
         bot.reply_to(message, chat.choices[0].message.content)
     except Exception as e:
