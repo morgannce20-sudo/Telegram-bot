@@ -80,7 +80,7 @@ def envoyer_pronostic_auto(match):
         infos += recherche_web(match + " cotes bookmakers pronostic")
         infos += recherche_web(match + " historique confrontations")
 
-        prompt = f"""Tu es un expert en paris sportifs en 2025. Analyse ces infos et donne un pronostic en francais pour : {match}
+        prompt = f'''Tu es un expert en paris sportifs en 2025. Analyse ces infos et donne un pronostic en francais pour : {match}
 Mbappé a quitte le PSG en 2024 pour le Real Madrid.
 Messi joue a l'Inter Miami, pas au PSG.
 Neymar ne joue plus au PSG.
@@ -138,7 +138,7 @@ def envoyer_pronostic_tennis(match, tournoi):
         infos += recherche_web(match + " blessures historique 2025")
         infos += recherche_web(match + " cotes bookmakers pronostic tennis")
 
-        prompt = f"""Tu es un expert en paris sportifs tennis en 2025. Analyse et donne un pronostic en francais pour : {match} ({tournoi})
+        prompt = f'''Tu es un expert en paris sportifs tennis en 2025. Analyse et donne un pronostic en francais pour : {match} ({tournoi})
 
 Infos recentes:
 {infos}
@@ -292,7 +292,7 @@ Niveau de confiance: XX% ⭐⭐⭐"""
             infos += recherche_web(message.text + " cotes bookmakers pronostic")
             infos += recherche_web(message.text + " historique confrontations")
 
-            prompt = f"""Tu es un expert en paris sportifs en 2025. Donne un pronostic détaillé en francais pour : {message.text}
+            prompt = f'''Tu es un expert en paris sportifs en 2025. Donne un pronostic détaillé en francais pour : {message.text}
 Mbappé joue au Real Madrid. Messi joue a l'Inter Miami. Neymar ne joue plus au PSG.
 Utilise UNIQUEMENT les joueurs actuels.
 
