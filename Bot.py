@@ -1,14 +1,34 @@
 import os
 import telebot
 import threading
+import requests
 from groq import Groq
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+def recherche_web(query):
+    try:
+        url = "https://serpapi.com/search"
+        params = {
+            "q": query,
+            "api_key": SEARCH_API_KEY,
+            "num": 5,
+            "hl": "fr"
+        }
+        response = requests.get(url, params=params)
+        data = response.json()
+        resultats = ""
+        for r in data.get("organic_results", [])[:5]:
+            resultats += r.get("title", "") + " - " + r.get("snippet", "") + "\n"
+        return resultats
+    except:
+        return ""
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -30,8 +50,25 @@ def start(message):
 @bot.message_handler(func=lambda m: True)
 def repondre(message):
     try:
+        bot.reply_to(message, "Recherche en cours... 🔍")
+        infos = recherche_web(message.text + " stats analyse pronostic")
+        infos += recherche_web(message.text + " news joueurs forme blessures")
+        prompt = f"""Tu es un expert en paris sportifs. Analyse ces informations et donne un pronostic DETAILLE en francais pour : {message.text}
+
+Informations trouvees sur le web:
+{infos}
+
+Donne moi:
+1. Analyse des statistiques et forme des equipes
+2. News importantes sur les joueurs (blessures, polémiques, vie privée)
+3. Probabilite de victoire de chaque equipe en %
+4. Score probable
+5. Joueurs susceptibles de marquer et probabilite
+6. Nombre de buts probable
+7. Recommandation finale avec niveau de confiance"""
+
         chat = client.chat.completions.create(
-            messages=[{"role": "user", "content": f"Tu es un expert en paris sportifs. Reponds en francais : {message.text}"}],
+            messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
         )
         bot.reply_to(message, chat.choices[0].message.content)
