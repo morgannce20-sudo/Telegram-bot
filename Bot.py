@@ -1,14 +1,13 @@
 import os
 import telebot
-import google.generativeai as genai
 import threading
+from groq import Groq
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-pro")
+client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 class Handler(BaseHTTPRequestHandler):
@@ -31,10 +30,11 @@ def start(message):
 @bot.message_handler(func=lambda m: True)
 def repondre(message):
     try:
-        reponse = model.generate_content(
-            f"Tu es un expert en paris sportifs. Reponds en francais : {message.text}"
+        chat = client.chat.completions.create(
+            messages=[{"role": "user", "content": f"Tu es un expert en paris sportifs. Reponds en francais : {message.text}"}],
+            model="llama3-8b-8192",
         )
-        bot.reply_to(message, reponse.text)
+        bot.reply_to(message, chat.choices[0].message.content)
     except Exception as e:
         bot.reply_to(message, f"Erreur: {str(e)}")
 
