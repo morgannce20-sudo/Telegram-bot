@@ -1,4 +1,4 @@
-import os
+ import os
 import telebot
 import google.generativeai as genai
 import threading
@@ -8,7 +8,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-1.5-flash-latest")
+model = genai.GenerativeModel("gemini-2.0-flash")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 class Handler(BaseHTTPRequestHandler):
@@ -39,4 +39,4 @@ def repondre(message):
         bot.reply_to(message, f"Erreur: {str(e)}")
 
 threading.Thread(target=run_server, daemon=True).start()
-bot.polling(none_stop=True)
+bot.polling(none_stop=True)   
