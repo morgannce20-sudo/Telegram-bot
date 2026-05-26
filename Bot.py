@@ -13,16 +13,6 @@ FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
 client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-def get_stats_equipe(equipe):
-    try:
-        url = "https://v3.football.api-sports.io/teams/statistics"
-        headers = {"x-apisports-key": FOOTBALL_API_KEY}
-        params = {"team": equipe, "season": "2024"}
-        response = requests.get(url, headers=headers, params=params)
-        return str(response.json())[:500]
-    except:
-        return ""
-
 def recherche_web(query):
     try:
         url = "https://serpapi.com/search"
@@ -57,21 +47,24 @@ def start(message):
 def repondre(message):
     try:
         bot.reply_to(message, "Recherche en cours... 🔍")
-        infos_web = recherche_web(message.text + " stats analyse pronostic 2024 2025")
-        infos_web += recherche_web(message.text + " news joueurs forme blessures")
-        prompt = f"""Tu es un expert en paris sportifs. Analyse ces informations et donne un pronostic DETAILLE en francais pour : {message.text}
+        infos_web = recherche_web(message.text + " stats analyse pronostic mai 2025 effectif actuel")
+        infos_web += recherche_web(message.text + " joueurs titulaires composition 2025")
+        infos_web += recherche_web(message.text + " news blessures actualite 2025")
+        prompt = f"""Tu es un expert en paris sportifs en 2025. Utilise UNIQUEMENT les informations recentes ci-dessous pour faire ton analyse. Ignore toute information obsolete sur des joueurs qui ont quitte les clubs.
 
-Informations trouvees sur le web:
+Informations recentes trouvees:
 {infos_web}
 
-Donne moi:
-1. Analyse des statistiques et forme actuelle des equipes
-2. News importantes sur les joueurs (blessures, polémiques, vie privée)
-3. Probabilite de victoire de chaque equipe en %
-4. Score probable
-5. Joueurs susceptibles de marquer et probabilite
-6. Nombre de buts probable
-7. Recommandation finale avec niveau de confiance"""
+Donne un pronostic DETAILLE en francais pour : {message.text}
+
+1. Analyse des statistiques et forme actuelle des equipes en 2025
+2. Joueurs cles ACTUELS (pas Messi, Neymar ou autres partis)
+3. News importantes (blessures, polémiques, vie privee des joueurs actuels)
+4. Probabilite de victoire de chaque equipe en %
+5. Score probable
+6. Joueurs susceptibles de marquer et probabilite
+7. Nombre de buts probable
+8. Recommandation finale avec niveau de confiance"""
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
