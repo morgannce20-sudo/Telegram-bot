@@ -1,4 +1,4 @@
- import os
+import os
 import telebot
 import google.generativeai as genai
 import threading
@@ -39,4 +39,4 @@ def repondre(message):
         bot.reply_to(message, f"Erreur: {str(e)}")
 
 threading.Thread(target=run_server, daemon=True).start()
-bot.polling(none_stop=True)   
+bot.polling(none_stop=True)
