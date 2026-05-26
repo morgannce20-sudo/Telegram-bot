@@ -8,19 +8,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
+FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
 
 client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+def get_stats_equipe(equipe):
+    try:
+        url = "https://v3.football.api-sports.io/teams/statistics"
+        headers = {"x-apisports-key": FOOTBALL_API_KEY}
+        params = {"team": equipe, "season": "2024"}
+        response = requests.get(url, headers=headers, params=params)
+        return str(response.json())[:500]
+    except:
+        return ""
+
 def recherche_web(query):
     try:
         url = "https://serpapi.com/search"
-        params = {
-            "q": query,
-            "api_key": SEARCH_API_KEY,
-            "num": 5,
-            "hl": "fr"
-        }
+        params = {"q": query, "api_key": SEARCH_API_KEY, "num": 5, "hl": "fr"}
         response = requests.get(url, params=params)
         data = response.json()
         resultats = ""
@@ -51,15 +57,15 @@ def start(message):
 def repondre(message):
     try:
         bot.reply_to(message, "Recherche en cours... 🔍")
-        infos = recherche_web(message.text + " stats analyse pronostic")
-        infos += recherche_web(message.text + " news joueurs forme blessures")
+        infos_web = recherche_web(message.text + " stats analyse pronostic 2024 2025")
+        infos_web += recherche_web(message.text + " news joueurs forme blessures")
         prompt = f"""Tu es un expert en paris sportifs. Analyse ces informations et donne un pronostic DETAILLE en francais pour : {message.text}
 
 Informations trouvees sur le web:
-{infos}
+{infos_web}
 
 Donne moi:
-1. Analyse des statistiques et forme des equipes
+1. Analyse des statistiques et forme actuelle des equipes
 2. News importantes sur les joueurs (blessures, polémiques, vie privée)
 3. Probabilite de victoire de chaque equipe en %
 4. Score probable
