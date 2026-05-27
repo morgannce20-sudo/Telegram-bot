@@ -81,9 +81,7 @@ def envoyer_pronostic_auto(match):
         infos += recherche_web(match + " historique confrontations")
 
         prompt = f'''Tu es un expert en paris sportifs en 2025. Analyse ces infos et donne un pronostic en francais pour : {match}
-Mbappé a quitte le PSG en 2024 pour le Real Madrid.
-Messi joue a l'Inter Miami, pas au PSG.
-Neymar ne joue plus au PSG.
+Mbappe joue au Real Madrid. Messi joue a l Inter Miami. Neymar ne joue plus au PSG.
 Utilise UNIQUEMENT les joueurs actuels des clubs.
 
 Infos recentes:
@@ -102,18 +100,18 @@ Format de reponse:
 [liste des absents confirmes]
 
 📰 NEWS IMPORTANTES
-[polémiques, vie privée, facteurs psychologiques]
+[polemiques, vie privee, facteurs psychologiques]
 
 📈 PROBABILITES
-🔵 [Equipe1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Equipe2]: XX% 🟩🟩⬜⬜⬜
+🔵 Equipe1: XX% 🟩🟩🟩⬜⬜
+🔴 Equipe2: XX% 🟩🟩⬜⬜⬜
 ⚪ Match nul: XX% 🟩⬜⬜⬜⬜
 
 🎯 SCORE PROBABLE: X - X
 
 ⚽ BUTEURS PROBABLES
-[Joueur1] - XX% de marquer
-[Joueur2] - XX% de marquer
+Joueur1 - XX% de marquer
+Joueur2 - XX% de marquer
 
 📉 NOMBRE DE BUTS
 Plus de 2.5: XX%
@@ -121,7 +119,7 @@ Moins de 2.5: XX%
 
 💰 RECOMMANDATION FINALE
 Pari conseille: [...]
-Niveau de confiance: XX% ⭐⭐⭐"""
+Niveau de confiance: XX% ⭐⭐⭐'''
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -154,14 +152,14 @@ Format de reponse:
 [analyse style et surface favorite]
 
 🚑 BLESSURES ET CONDITION PHYSIQUE
-[état physique des joueurs]
+[etat physique des joueurs]
 
 📰 NEWS IMPORTANTES
-[actualités récentes]
+[actualites recentes]
 
 📈 PROBABILITES
-🔵 [Joueur1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Joueur2]: XX% 🟩🟩⬜⬜⬜
+🔵 Joueur1: XX% 🟩🟩🟩⬜⬜
+🔴 Joueur2: XX% 🟩🟩⬜⬜⬜
 
 🎯 SCORE PROBABLE: X-X X-X
 
@@ -170,8 +168,8 @@ Plus de 2.5 sets: XX%
 Moins de 2.5 sets: XX%
 
 💰 RECOMMANDATION FINALE
-Pari conseillé: [...]
-Niveau de confiance: XX% ⭐⭐⭐"""
+Pari conseille: [...]
+Niveau de confiance: XX% ⭐⭐⭐'''
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -184,7 +182,6 @@ Niveau de confiance: XX% ⭐⭐⭐"""
 def verifier_matchs():
     now = datetime.now()
 
-    # Football
     for m in get_matchs_du_jour():
         try:
             heure_match = datetime.strptime(m["heure"], "%H:%M").replace(
@@ -195,7 +192,6 @@ def verifier_matchs():
         except:
             pass
 
-    # Tennis
     for m in get_matchs_tennis():
         try:
             heure_match = datetime.strptime(m["heure"], "%H:%M").replace(
@@ -231,7 +227,7 @@ def start(message):
     if str(message.chat.id) not in ADMINS:
         bot.reply_to(message, "❌ Accès refusé.")
         return
-    bot.reply_to(message, "Bonjour! Je suis ton expert en paris sportifs! 🏆\n\nCommandes disponibles:\n⚽ Demande un pronostic foot\n🎾 Demande un pronostic tennis\n\nOu attends mes analyses automatiques 2h avant chaque match!")
+    bot.reply_to(message, "Bonjour! Je suis ton expert en paris sportifs! 🏆\n\nCommandes:\n⚽ Pronostic foot\n🎾 Pronostic tennis\n\nOu attends mes analyses automatiques 2h avant chaque match!")
 
 @bot.message_handler(func=lambda m: True)
 def repondre(message):
@@ -242,7 +238,6 @@ def repondre(message):
         bot.reply_to(message, "Recherche en cours... 🔍")
         texte = message.text.lower()
 
-        # Détection tennis
         mots_tennis = ["tennis", "atp", "wta", "set", "ace", "roland", "wimbledon", "open"]
         is_tennis = any(mot in texte for mot in mots_tennis)
 
@@ -251,14 +246,14 @@ def repondre(message):
             infos += recherche_web(message.text + " blessures historique 2025")
             infos += recherche_web(message.text + " cotes bookmakers pronostic tennis")
 
-            prompt = f"""Tu es un expert en paris sportifs tennis en 2025. Donne un pronostic détaillé en francais pour : {message.text}
+            prompt = f'''Tu es un expert en paris sportifs tennis en 2025. Donne un pronostic detaille en francais pour : {message.text}
 
 Infos recentes:
 {infos}
 
 Format de reponse:
-🎾 MATCH : [Joueur1] - [Joueur2]
-🏆 [Tournoi]
+🎾 MATCH : Joueur1 - Joueur2
+🏆 Tournoi
 
 📊 FORME ACTUELLE
 [analyse forme des 5 derniers matchs]
@@ -267,14 +262,14 @@ Format de reponse:
 [analyse style et surface favorite]
 
 🚑 BLESSURES ET CONDITION PHYSIQUE
-[état physique]
+[etat physique]
 
 📰 NEWS IMPORTANTES
-[actualités récentes]
+[actualites recentes]
 
 📈 PROBABILITES
-🔵 [Joueur1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Joueur2]: XX% 🟩🟩⬜⬜⬜
+🔵 Joueur1: XX% 🟩🟩🟩⬜⬜
+🔴 Joueur2: XX% 🟩🟩⬜⬜⬜
 
 🎯 SCORE PROBABLE: X-X X-X
 
@@ -283,8 +278,8 @@ Plus de 2.5 sets: XX%
 Moins de 2.5 sets: XX%
 
 💰 RECOMMANDATION FINALE
-Pari conseillé: [...]
-Niveau de confiance: XX% ⭐⭐⭐"""
+Pari conseille: [...]
+Niveau de confiance: XX% ⭐⭐⭐'''
 
         else:
             infos = recherche_web(message.text + " stats forme composition 2025")
@@ -292,15 +287,15 @@ Niveau de confiance: XX% ⭐⭐⭐"""
             infos += recherche_web(message.text + " cotes bookmakers pronostic")
             infos += recherche_web(message.text + " historique confrontations")
 
-            prompt = f'''Tu es un expert en paris sportifs en 2025. Donne un pronostic détaillé en francais pour : {message.text}
-Mbappé joue au Real Madrid. Messi joue a l'Inter Miami. Neymar ne joue plus au PSG.
+            prompt = f'''Tu es un expert en paris sportifs en 2025. Donne un pronostic detaille en francais pour : {message.text}
+Mbappe joue au Real Madrid. Messi joue a l Inter Miami. Neymar ne joue plus au PSG.
 Utilise UNIQUEMENT les joueurs actuels.
 
 Infos recentes:
 {infos}
 
 Format de reponse:
-⚽ MATCH : [Equipe1] - [Equipe2]
+⚽ MATCH : Equipe1 - Equipe2
 
 📊 FORME ACTUELLE
 [analyse forme des 5 derniers matchs]
@@ -309,24 +304,29 @@ Format de reponse:
 [joueurs importants ACTUELS]
 
 🚑 BLESSURES ET ABSENCES
-[absents confirmés]
+[absents confirmes]
 
 📰 NEWS IMPORTANTES
-[actualités récentes]
+[actualites recentes]
 
 📈 PROBABILITES
-🔵 [Equipe1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Equipe2]: XX% 🟩🟩⬜⬜⬜
+🔵 Equipe1: XX% 🟩🟩🟩⬜⬜
+🔴 Equipe2: XX% 🟩🟩⬜⬜⬜
 ⚪ Match nul: XX% 🟩⬜⬜⬜⬜
 
 🎯 SCORE PROBABLE: X - X
 
 ⚽ BUTEURS PROBABLES
-[Joueur1] - XX% de marquer
-[Joueur2] - XX% de marquer
+Joueur1 - XX% de marquer
+Joueur2 - XX% de marquer
 
 📉 NOMBRE DE BUTS
 Plus de 2.5: XX%
 Moins de 2.5: XX%
 
-💰 RECOMMAND
+💰 RECOMMANDATION FINALE
+Pari conseille: [...]
+Niveau de confiance: XX% ⭐⭐⭐'''
+
+        chat = client.chat.completions.create(
+            messages=[{"role": "user", "cont
