@@ -119,7 +119,8 @@ Moins de 2.5: XX%
 
 💰 RECOMMANDATION FINALE
 Pari conseille: [...]
-Niveau de confiance: XX% ⭐⭐⭐'''
+Niveau de confiance: XX% ⭐⭐⭐
+'''
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -169,7 +170,8 @@ Moins de 2.5 sets: XX%
 
 💰 RECOMMANDATION FINALE
 Pari conseille: [...]
-Niveau de confiance: XX% ⭐⭐⭐'''
+Niveau de confiance: XX% ⭐⭐⭐
+'''
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
@@ -279,7 +281,8 @@ Moins de 2.5 sets: XX%
 
 💰 RECOMMANDATION FINALE
 Pari conseille: [...]
-Niveau de confiance: XX% ⭐⭐⭐'''
+Niveau de confiance: XX% ⭐⭐⭐
+'''
 
         else:
             infos = recherche_web(message.text + " stats forme composition 2025")
