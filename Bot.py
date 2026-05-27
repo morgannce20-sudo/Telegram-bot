@@ -326,7 +326,8 @@ Moins de 2.5: XX%
 
 💰 RECOMMANDATION FINALE
 Pari conseille: [...]
-Niveau de confiance: XX% ⭐⭐⭐'''
+Niveau de confiance: XX% ⭐⭐⭐
+'''
 
         chat = client.chat.completions.create(
             messages=[{"role": "user", "cont
