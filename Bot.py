@@ -4,306 +4,445 @@ import threading
 import requests
 import schedule
 import time
+import logging
 from groq import Groq
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
+# ─────────────────────────────────────────────
+#  CONFIGURATION
+# ─────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+log = logging.getLogger(__name__)
+
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
+SEARCH_API_KEY   = os.environ.get("SEARCH_API_KEY")
 FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
-TENNIS_API_KEY = os.environ.get("TENNIS_API_KEY")
-CHAT_ID = "8449749928"
+TENNIS_API_KEY   = os.environ.get("TENNIS_API_KEY")
+CHAT_ID          = os.environ.get("CHAT_ID", "8449749928")
+
+for var_name, var_value in [
+    ("TELEGRAM_TOKEN",   TELEGRAM_TOKEN),
+    ("GROQ_API_KEY",     GROQ_API_KEY),
+    ("SEARCH_API_KEY",   SEARCH_API_KEY),
+    ("FOOTBALL_API_KEY", FOOTBALL_API_KEY),
+    ("TENNIS_API_KEY",   TENNIS_API_KEY),
+]:
+    if not var_value:
+        log.warning(f"Variable d'environnement manquante : {var_name}")
 
 client = Groq(api_key=GROQ_API_KEY)
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot    = telebot.TeleBot(TELEGRAM_TOKEN)
 
-def recherche_web(query):
+FOOTBALL_LEAGUES = "39,140,135,78,61,2,3"
+FOOTBALL_SEASON  = "2024"
+
+
+# ─────────────────────────────────────────────
+#  UTILITAIRES
+# ─────────────────────────────────────────────
+def recherche_web(query: str) -> str:
     try:
-        url = "https://serpapi.com/search"
-        params = {"q": query, "api_key": SEARCH_API_KEY, "num": 5, "hl": "fr"}
-        response = requests.get(url, params=params)
+        response = requests.get(
+            "https://serpapi.com/search",
+            params={"q": query, "api_key": SEARCH_API_KEY, "num": 5, "hl": "fr"},
+            timeout=10,
+        )
+        response.raise_for_status()
         data = response.json()
-        resultats = ""
-        for r in data.get("organic_results", [])[:5]:
-            resultats += r.get("title", "") + " - " + r.get("snippet", "") + "\n"
-        return resultats
-    except:
+        return "\n".join(
+            f"{r.get('title','')} - {r.get('snippet','')}"
+            for r in data.get("organic_results", [])[:5]
+        )
+    except requests.RequestException as e:
+        log.error(f"Erreur recherche web ({query[:40]}…): {e}")
         return ""
 
-def detecter_sport(texte):
+
+def detecter_sport(texte: str) -> str:
     try:
         chat = client.chat.completions.create(
-            messages=[{"role": "user", "content": f"Est-ce que ce texte parle de tennis ou de football? Reponds uniquement par 'tennis' ou 'foot': {texte}"}],
+            messages=[{
+                "role": "user",
+                "content": (
+                    "Est-ce que ce texte parle de tennis ou de football ? "
+                    "Réponds uniquement par 'tennis' ou 'foot' : " + texte
+                ),
+            }],
             model="llama-3.3-70b-versatile",
+            max_tokens=10,
         )
         reponse = chat.choices[0].message.content.lower().strip()
-        if "tennis" in reponse:
-            return "tennis"
-        return "foot"
-    except:
+        return "tennis" if "tennis" in reponse else "foot"
+    except Exception as e:
+        log.error(f"Erreur détection sport: {e}")
         texte_lower = texte.lower()
-        if any(mot in texte_lower for mot in ["tennis", "atp", "wta", "roland", "wimbledon"]):
+        if any(m in texte_lower for m in ["tennis", "atp", "wta", "roland", "wimbledon"]):
             return "tennis"
         return "foot"
 
-def get_matchs_foot():
+
+def envoyer_message(chat_id: str, texte: str) -> None:
+    try:
+        for i in range(0, len(texte), 4000):
+            bot.send_message(chat_id, texte[i:i + 4000])
+    except telebot.apihelper.ApiException as e:
+        log.error(f"Erreur envoi Telegram: {e}")
+
+
+# ─────────────────────────────────────────────
+#  RÉCUPÉRATION DES MATCHS
+# ─────────────────────────────────────────────
+def get_matchs_foot() -> list:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        url = "https://v3.football.api-sports.io/fixtures"
-        headers = {"x-apisports-key": FOOTBALL_API_KEY}
-        params = {"date": today, "league": "39,140,135,78,61,2,3", "season": "2024"}
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(
+            "https://v3.football.api-sports.io/fixtures",
+            headers={"x-apisports-key": FOOTBALL_API_KEY},
+            params={"date": today, "league": FOOTBALL_LEAGUES, "season": FOOTBALL_SEASON},
+            timeout=10,
+        )
+        response.raise_for_status()
         data = response.json()
         matchs = []
         for match in data.get("response", []):
-            heure = match["fixture"]["date"][11:16]
-            equipe1 = match["teams"]["home"]["name"]
-            equipe2 = match["teams"]["away"]["name"]
-            matchs.append({"heure": heure, "match": f"{equipe1} vs {equipe2}", "sport": "foot"})
+            matchs.append({
+                "heure": match["fixture"]["date"][11:16],
+                "match": f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}",
+                "ligue": match["league"]["name"],
+                "sport": "foot",
+            })
+        log.info(f"{len(matchs)} match(s) foot trouvé(s) pour aujourd'hui")
         return matchs
-    except:
+    except Exception as e:
+        log.error(f"Erreur get_matchs_foot: {e}")
         return []
 
-def get_matchs_tennis():
+
+def get_matchs_tennis() -> list:
     try:
         today = datetime.now().strftime("%Y-%m-%d")
-        url = "https://v1.tennis.api-sports.io/games"
-        headers = {"x-apisports-key": TENNIS_API_KEY}
-        params = {"date": today}
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(
+            "https://v1.tennis.api-sports.io/games",
+            headers={"x-apisports-key": TENNIS_API_KEY},
+            params={"date": today},
+            timeout=10,
+        )
+        response.raise_for_status()
         data = response.json()
         matchs = []
         for match in data.get("response", []):
             try:
-                heure = match["date"][11:16]
-                joueur1 = match["players"]["home"]["name"]
-                joueur2 = match["players"]["away"]["name"]
-                matchs.append({"heure": heure, "match": f"{joueur1} vs {joueur2}", "sport": "tennis"})
-            except:
+                matchs.append({
+                    "heure":   match["date"][11:16],
+                    "match":   f"{match['players']['home']['name']} vs {match['players']['away']['name']}",
+                    "tournoi": match.get("tournament", {}).get("name", "Tournoi inconnu"),
+                    "surface": match.get("surface", "inconnu"),
+                    "sport":   "tennis",
+                })
+            except KeyError:
                 pass
+        log.info(f"{len(matchs)} match(s) tennis trouvé(s) pour aujourd'hui")
         return matchs
-    except:
+    except Exception as e:
+        log.error(f"Erreur get_matchs_tennis: {e}")
         return []
 
-def envoyer_pronostic_tennis(match):
+
+# ─────────────────────────────────────────────
+#  GÉNÉRATION DES PRONOSTICS
+# ─────────────────────────────────────────────
+def envoyer_pronostic_tennis(match: str, tournoi: str = "", surface: str = "", chat_id: str = None) -> None:
+    target = chat_id or CHAT_ID
+    envoyer_message(target, f"🎾 Match tennis dans 1h !\n{match}\nTournoi : {tournoi} | Surface : {surface}\n⏳ Analyse en cours…")
+
+    infos  = recherche_web(f"{match} tennis stats forme recente 2025")
+    infos += recherche_web(f"{match} head to head historique surface {surface}")
+    infos += recherche_web(f"{match} blessure actualite 2025")
+    infos += recherche_web(f"{match} classement ATP WTA 2025")
+    infos += recherche_web(f"{match} pronostic cote bookmaker 2025")
+
+    prompt = f"""Tu es un expert TENNIS en 2025. Analyse ce match avec des DONNÉES RÉELLES.
+Ces personnes sont des JOUEURS DE TENNIS professionnels. Ne parle JAMAIS de football.
+
+Infos collectées sur le web :
+{infos}
+
+MATCH : {match}
+TOURNOI : {tournoi}
+SURFACE : {surface}
+
+Fournis une analyse complète et structurée exactement comme ceci :
+
+🎾 MATCH : {match}
+🏆 Tournoi : {tournoi} | Surface : {surface}
+
+📊 FORME RÉCENTE (5 derniers matchs) :
+→ [Joueur1] : [W-L] | Derniers résultats avec scores exacts
+→ [Joueur2] : [W-L] | Derniers résultats avec scores exacts
+
+🌍 SURFACE :
+→ Stats sur {surface} cette saison pour chaque joueur (victoires/défaites)
+→ Avantage : [Joueur qui a l'avantage sur cette surface et pourquoi]
+
+👥 HEAD TO HEAD :
+→ Historique global : [X-Y]
+→ Sur {surface} : [X-Y]
+→ Dernier match : [date + score]
+
+🚑 BLESSURES & FORME PHYSIQUE :
+→ [Joueur1] : [état physique confirmé ou "RAS"]
+→ [Joueur2] : [état physique confirmé ou "RAS"]
+
+📰 NEWS IMPORTANTES :
+→ [Infos récentes importantes pour ce match]
+
+📈 PROBABILITÉS :
+→ [Joueur1] : XX%
+→ [Joueur2] : XX%
+
+🎯 SCORE PRÉDIT : X-X sets
+
+⚽ STATS CLÉS :
+→ [Joueur1] : XX% de 1er service, XX% de break
+→ [Joueur2] : XX% de 1er service, XX% de break
+
+💡 ANALYSE TACTIQUE :
+→ Style de jeu de chaque joueur et comment ils s'affrontent sur cette surface
+
+💰 RECOMMANDATION FINALE :
+→ Pari conseillé : [VAINQUEUR ou SETS ou HANDICAP]
+→ Cote estimée : [X.XX]
+→ Niveau de confiance : XX% ⭐⭐⭐
+
+⚠️ Utilise UNIQUEMENT des données réelles et vérifiées. Indique si une info est incertaine."""
+
     try:
-        bot.send_message(CHAT_ID, f"⏰ Match tennis dans 1h!\n🎾 {match}\n\nAnalyse en cours...")
-        infos = recherche_web(match + " tennis stats forme 2025")
-        infos += recherche_web(match + " head to head historique surface")
-        infos += recherche_web(match + " blessure actualite 2025")
-
-        prompt = f"""Tu es un expert TENNIS en 2025. Ces personnes sont des JOUEURS DE TENNIS.
-Ne parle JAMAIS de football.
-Infos: {infos}
-
-🎾 {match}
-
-📊 FORME RECENTE
-[derniers matchs tennis]
-
-🏟️ SURFACE
-[avantage pour qui]
-
-📰 NEWS
-[blessures, forme physique]
-
-📈 PROBABILITES
-🔵 [Joueur1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Joueur2]: XX% 🟩🟩⬜⬜⬜
-
-🎯 SCORE: X-X sets
-
-💰 PARI CONSEILLE
-Vainqueur: [...]
-Confiance: XX% ⭐⭐⭐"""
-
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
+            max_tokens=2000,
         )
-        bot.send_message(CHAT_ID, chat.choices[0].message.content)
+        envoyer_message(target, chat.choices[0].message.content)
     except Exception as e:
-        bot.send_message(CHAT_ID, f"Erreur tennis: {str(e)}")
+        log.error(f"Erreur Groq tennis: {e}")
+        envoyer_message(target, f"❌ Erreur lors de l'analyse tennis : {e}")
 
-def envoyer_pronostic_foot(match):
+
+def envoyer_pronostic_foot(match: str, ligue: str = "", chat_id: str = None) -> None:
+    target = chat_id or CHAT_ID
+    envoyer_message(target, f"⚽ Match foot dans 2h !\n{match}\nCompétition : {ligue}\n⏳ Analyse en cours…")
+
+    infos  = recherche_web(f"{match} stats forme composition équipe 2025")
+    infos += recherche_web(f"{match} blessures absents suspendus 2025")
+    infos += recherche_web(f"{match} cotes bookmakers pronostic 2025")
+    infos += recherche_web(f"{match} historique confrontations head to head")
+    infos += recherche_web(f"{match} classement {ligue} 2025")
+    infos += recherche_web(f"{match} buteurs forme récente 2025")
+
+    prompt = f"""Tu es un expert FOOTBALL en 2025. Analyse ce match avec des DONNÉES RÉELLES.
+Utilise UNIQUEMENT les joueurs actuellement dans ces clubs en 2025.
+Mbappé joue au Real Madrid. Messi joue à l'Inter Miami. Neymar ne joue plus au PSG.
+
+Infos collectées sur le web :
+{infos}
+
+MATCH : {match}
+COMPÉTITION : {ligue}
+
+Fournis une analyse complète et structurée exactement comme ceci :
+
+⚽ MATCH : {match}
+🏆 Compétition : {ligue}
+
+📊 FORME ACTUELLE (5 derniers matchs) :
+→ [Equipe1] : [W-D-L] | Buts marqués : X | Buts encaissés : X | Série actuelle
+→ [Equipe2] : [W-D-L] | Buts marqués : X | Buts encaissés : X | Série actuelle
+
+🏠 DOMICILE / EXTÉRIEUR :
+→ [Equipe1] à domicile cette saison : [W-D-L]
+→ [Equipe2] à l'extérieur cette saison : [W-D-L]
+
+👥 JOUEURS CLÉS (noms réels 2025) :
+→ [Equipe1] : [Nom joueur] - [Stat précise : X buts / X passes en N matchs]
+→ [Equipe2] : [Nom joueur] - [Stat précise : X buts / X passes en N matchs]
+
+🚑 BLESSURES & ABSENCES :
+→ [Equipe1] : [Noms confirmés ou "Aucune absence confirmée"]
+→ [Equipe2] : [Noms confirmés ou "Aucune absence confirmée"]
+
+🔄 HEAD TO HEAD :
+→ Historique global : [X victoires E1 / X nuls / X victoires E2]
+→ Dernier match : [date + score]
+
+📰 NEWS IMPORTANTES :
+→ [Infos récentes qui impactent le match : motivation, contexte, etc.]
+
+📈 PROBABILITÉS :
+→ [Equipe1] : XX%
+→ Match nul : XX%
+→ [Equipe2] : XX%
+
+🎯 SCORE PROBABLE : X - X
+
+⚽ BUTEURS PROBABLES :
+→ [Equipe1] : [Nom] (XX% de chances - X buts cette saison)
+→ [Equipe2] : [Nom] (XX% de chances - X buts cette saison)
+
+🔢 NOMBRE DE BUTS :
+→ Plus de 2.5 : XX%
+→ Moins de 2.5 : XX%
+→ Les deux équipes marquent (BTTS) : XX%
+
+💡 ANALYSE TACTIQUE :
+→ Système de jeu de chaque équipe et avantages/faiblesses
+
+💰 RECOMMANDATION FINALE :
+→ Pari conseillé : [PARI PRÉCIS]
+→ Cote estimée : [X.XX]
+→ Niveau de confiance : XX% ⭐⭐⭐
+
+⚠️ Utilise UNIQUEMENT des données réelles et vérifiées. Indique si une info est incertaine."""
+
     try:
-        bot.send_message(CHAT_ID, f"⏰ Match foot dans 2h!\n⚽ {match}\n\nAnalyse en cours...")
-        infos = recherche_web(match + " stats forme composition 2025")
-        infos += recherche_web(match + " blessures absents 2025")
-        infos += recherche_web(match + " cotes bookmakers pronostic")
-        infos += recherche_web(match + " historique confrontations")
-
-        prompt = f"""Tu es un expert FOOTBALL en 2025.
-Mbappe joue au Real Madrid.
-Messi joue a l Inter Miami.
-Neymar ne joue plus au PSG.
-Utilise UNIQUEMENT les joueurs actuels.
-Infos: {infos}
-
-⚽ {match}
-
-📊 FORME ACTUELLE
-[derniers 5 matchs]
-
-👥 JOUEURS CLES
-[joueurs actuels]
-
-🚑 ABSENCES
-[absents confirmes]
-
-📰 NEWS
-[polemiques, vie privee]
-
-📈 PROBABILITES
-🔵 [Equipe1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Equipe2]: XX% 🟩🟩⬜⬜⬜
-⚪ Nul: XX% 🟩⬜⬜⬜⬜
-
-🎯 SCORE: X-X
-
-⚽ BUTEURS
-[Joueur] - XX%
-
-📉 BUTS
-Plus 2.5: XX% / Moins 2.5: XX%
-
-💰 PARI CONSEILLE
-Pari: [...] Confiance: XX% ⭐⭐⭐"""
-
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
+            max_tokens=2000,
         )
-        bot.send_message(CHAT_ID, chat.choices[0].message.content)
+        envoyer_message(target, chat.choices[0].message.content)
     except Exception as e:
-        bot.send_message(CHAT_ID, f"Erreur foot: {str(e)}")
+        log.error(f"Erreur Groq foot: {e}")
+        envoyer_message(target, f"❌ Erreur lors de l'analyse foot : {e}")
 
-def verifier_matchs():
-    now = datetime.now()
-    for m in get_matchs_foot():
-        try:
-            heure_match = datetime.strptime(m["heure"], "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day)
-            heure_envoi = heure_match - timedelta(hours=2)
-            if abs((heure_envoi - now).total_seconds()) < 60:
-                envoyer_pronostic_foot(m["match"])
-        except:
-            pass
-    for m in get_matchs_tennis():
-        try:
-            heure_match = datetime.strptime(m["heure"], "%H:%M").replace(
-                year=now.year, month=now.month, day=now.day)
-            heure_envoi = heure_match - timedelta(hours=1)
-            if abs((heure_envoi - now).total_seconds()) < 60:
-                envoyer_pronostic_tennis(m["match"])
-        except:
-            pass
 
-def scheduler():
-    schedule.every().minute.do(verifier_matchs)
+# ─────────────────────────────────────────────
+#  SCHEDULER
+# ─────────────────────────────────────────────
+def verifier_matchs() -> None:
+    maintenant    = datetime.now()
+    heure_dans_2h = (maintenant + timedelta(hours=2)).strftime("%H:%M")
+    heure_dans_1h = (maintenant + timedelta(hours=1)).strftime("%H:%M")
+
+    for match in get_matchs_foot():
+        if match["heure"] == heure_dans_2h:
+            envoyer_pronostic_foot(match["match"], match.get("ligue", ""))
+
+    for match in get_matchs_tennis():
+        if match["heure"] == heure_dans_1h:
+            envoyer_pronostic_tennis(
+                match["match"],
+                match.get("tournoi", ""),
+                match.get("surface", ""),
+            )
+
+
+# ─────────────────────────────────────────────
+#  COMMANDES TELEGRAM
+# ─────────────────────────────────────────────
+@bot.message_handler(commands=["start"])
+def cmd_start(message):
+    texte = (
+        "👋 Bot de pronostics actif !\n\n"
+        "📋 Commandes disponibles :\n"
+        "/matchs — Voir les matchs du jour\n"
+        "/foot [match] — Analyser un match foot\n"
+        "/tennis [match] — Analyser un match tennis\n"
+        "/aide — Afficher cette aide\n\n"
+        "✉️ Tu peux aussi m'envoyer directement le nom d'un match !"
+    )
+    bot.reply_to(message, texte)
+
+
+@bot.message_handler(commands=["aide"])
+def cmd_aide(message):
+    cmd_start(message)
+
+
+@bot.message_handler(commands=["matchs"])
+def cmd_matchs(message):
+    matchs_foot   = get_matchs_foot()
+    matchs_tennis = get_matchs_tennis()
+
+    if not matchs_foot and not matchs_tennis:
+        bot.reply_to(message, "😕 Aucun match trouvé pour aujourd'hui.")
+        return
+
+    lignes = ["📅 Matchs du jour :\n"]
+    if matchs_foot:
+        lignes.append("⚽ FOOTBALL :")
+        for m in matchs_foot:
+            lignes.append(f"  {m['heure']} — {m['match']} ({m['ligue']})")
+    if matchs_tennis:
+        lignes.append("\n🎾 TENNIS :")
+        for m in matchs_tennis:
+            lignes.append(f"  {m['heure']} — {m['match']} ({m['tournoi']})")
+
+    bot.reply_to(message, "\n".join(lignes))
+
+
+@bot.message_handler(commands=["foot"])
+def cmd_foot(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Usage : /foot Equipe1 vs Equipe2")
+        return
+    envoyer_pronostic_foot(parts[1], chat_id=str(message.chat.id))
+
+
+@bot.message_handler(commands=["tennis"])
+def cmd_tennis(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Usage : /tennis Joueur1 vs Joueur2")
+        return
+    envoyer_pronostic_tennis(parts[1], chat_id=str(message.chat.id))
+
+
+@bot.message_handler(func=lambda m: True)
+def analyser_message(message):
+    texte = message.text.strip()
+    if not texte:
+        return
+    sport = detecter_sport(texte)
+    if sport == "tennis":
+        envoyer_pronostic_tennis(texte, chat_id=str(message.chat.id))
+    else:
+        envoyer_pronostic_foot(texte, chat_id=str(message.chat.id))
+
+
+# ─────────────────────────────────────────────
+#  HEALTH CHECK
+# ─────────────────────────────────────────────
+class HealthCheck(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+    def log_message(self, *args):
+        pass
+
+
+def run_scheduler():
+    schedule.every(1).minutes.do(verifier_matchs)
     while True:
         schedule.run_pending()
         time.sleep(30)
 
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
-    def log_message(self, format, *args):
-        pass
 
-def run_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), Handler)
-    server.serve_forever()
-
-@bot.message_handler(commands=["start"])
-def start(message):
-    bot.reply_to(message, "Bonjour! Je suis ton expert en paris sportifs!\n\nSports:\n⚽ Football\n🎾 Tennis\n\nDemande-moi un pronostic!")
-
-@bot.message_handler(func=lambda m: True)
-def repondre(message):
-    try:
-        sport = detecter_sport(message.text)
-        emoji = "🎾" if sport == "tennis" else "⚽"
-        bot.reply_to(message, f"{emoji} Analyse en cours...")
-        infos = recherche_web(message.text + " stats forme 2025")
-        infos += recherche_web(message.text + " blessures actualite 2025")
-        infos += recherche_web(message.text + " cotes pronostic")
-        infos += recherche_web(message.text + " historique head to head")
-
-        if sport == "tennis":
-            prompt = f"""Tu es un expert TENNIS en 2025.
-Ne parle JAMAIS de football pour une question tennis.
-Infos: {infos}
-
-🎾 {message.text}
-
-📊 FORME RECENTE
-[derniers matchs tennis]
-
-🏟️ SURFACE
-[avantage pour qui]
-
-📰 NEWS
-[blessures, forme physique]
-
-📈 PROBABILITES
-🔵 [Joueur1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Joueur2]: XX% 🟩🟩⬜⬜⬜
-
-🎯 SCORE: X-X sets
-
-💰 PARI CONSEILLE
-Vainqueur: [...]
-Confiance: XX% ⭐⭐⭐"""
-        else:
-            prompt = f"""Tu es un expert FOOTBALL en 2025.
-Mbappe joue au Real Madrid.
-Messi joue a l Inter Miami.
-Neymar ne joue plus au PSG.
-Infos: {infos}
-
-⚽ {message.text}
-
-📊 FORME ACTUELLE
-[derniers 5 matchs]
-
-👥 JOUEURS CLES
-[joueurs actuels]
-
-🚑 ABSENCES
-[absents confirmes]
-
-📰 NEWS
-[polemiques, vie privee]
-
-📈 PROBABILITES
-🔵 [Equipe1]: XX% 🟩🟩🟩⬜⬜
-🔴 [Equipe2]: XX% 🟩🟩⬜⬜⬜
-⚪ Nul: XX% 🟩⬜⬜⬜⬜
-
-🎯 SCORE: X-X
-
-⚽ BUTEURS
-[Joueur] - XX%
-
-📉 BUTS
-Plus 2.5: XX% / Moins 2.5: XX%
-
-💰 PARI CONSEILLE
-Pari: [...] Confiance: XX% ⭐⭐⭐"""
-
-        chat = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-        )
-        bot.reply_to(message, chat.choices[0].message.content)
-    except Exception as e:
-        bot.reply_to(message, f"Erreur: {str(e)}")
-
-threading.Thread(target=run_server, daemon=True).start()
-threading.Thread(target=scheduler, daemon=True).start()
-bot.polling(none_stop=True)
+# ─────────────────────────────────────────────
+#  POINT D'ENTRÉE
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    log.info("Démarrage du bot de pronostics…")
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    server = HTTPServer(("0.0.0.0", 8080), HealthCheck)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    log.info("Health check actif sur le port 8080")
+    log.info("Bot démarré ! En attente de messages…")
+    bot.infinity_polling(timeout=60, long_polling_timeout=30)
