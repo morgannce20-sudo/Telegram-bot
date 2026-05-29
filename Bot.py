@@ -9,178 +9,137 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from pymongo import MongoClient
 
-# --- CONFIGURATION ---
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
-SEARCH_API_KEY   = os.environ.get("SEARCH_API_KEY")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
 FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
-TENNIS_API_KEY   = os.environ.get("TENNIS_API_KEY")
-MONGODB_URI      = os.environ.get("MONGODB_URI")
-CHAT_ID          = "8449749928"
-
+TENNIS_API_KEY = os.environ.get("TENNIS_API_KEY")
+MONGODB_URL = os.environ.get("MONGODB_URL")
+CHAT_ID = "8449749928"
 CAPITAL_INITIAL = 50.0
-MISE_MIN        = 1.0
-MISE_MAX_PCT    = 0.10
-CONFIANCE_MIN   = 0.60
 
-# --- CLIENTS ---
-client_groq = Groq(api_key=GROQ_API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# --- MONGODB ---
-mongo       = MongoClient(MONGODB_URI)
-db          = mongo["pronostics"]
-col_paris   = db["paris"]
-col_capital = db["capital"]
+mongo_client = MongoClient(MONGODB_URL)
+db = mongo_client["pronostics"]
+collection_paris = db["paris"]
+collection_bankroll = db["bankroll"]
 
-def get_capital():
-    doc = col_capital.find_one({"_id": "capital"})
+def get_bankroll():
+    doc = collection_bankroll.find_one({"id": "bankroll"})
     if doc:
-        return doc["valeur"]
-    col_capital.insert_one({"_id": "capital", "valeur": CAPITAL_INITIAL})
+        return doc["capital"]
+    collection_bankroll.insert_one({"id": "bankroll", "capital": CAPITAL_INITIAL})
     return CAPITAL_INITIAL
 
-def set_capital(valeur):
-    col_capital.update_one(
-        {"_id": "capital"},
-        {"$set": {"valeur": round(valeur, 2)}},
-        upsert=True
-    )
+def update_bankroll(nouveau_capital):
+    collection_bankroll.update_one({"id": "bankroll"}, {"$set": {"capital": nouveau_capital}})
 
-def calculer_mise(confiance):
-    capital = get_capital()
-    if capital <= 0:
-        return 0.0
-    mise = capital * confiance * MISE_MAX_PCT
-    mise = max(MISE_MIN, round(mise, 2))
-    mise = min(mise, capital)
-    return mise
+def calculer_mise(confiance, bankroll):
+    fraction_kelly = (confiance / 100 - (1 - confiance / 100)) / 1
+    fraction_kelly = max(0.02, min(fraction_kelly, 0.1))
+    return round(bankroll * fraction_kelly, 2)
 
-def enregistrer_pari(match, sport, pari, cote, confiance, mise):
-    doc = {
-        "date":          datetime.now(),
-        "match":         match,
-        "sport":         sport,
-        "pari":          pari,
-        "cote":          cote,
-        "confiance":     confiance,
-        "mise":          mise,
-        "statut":        "en_attente",
-        "capital_avant": get_capital(),
-    }
-    col_paris.insert_one(doc)
-    set_capital(get_capital() - mise)
+def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
+    collection_paris.insert_one({
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "match": match,
+        "sport": sport,
+        "pari": pari,
+        "confiance": confiance,
+        "mise": mise,
+        "cote": cote,
+        "resultat": "en attente",
+        "gain": 0
+    })
 
-def get_stats_historique():
-    paris = list(col_paris.find({"statut": {"$in": ["gagne", "perdu"]}}))
+def get_statistiques():
+    paris = list(collection_paris.find({"resultat": {"$ne": "en attente"}}))
     if not paris:
-        return {"total": 0, "gagnes": 0, "taux_reussite": 0, "roi": 0, "capital_actuel": round(get_capital(), 2)}
-    gagnes = [p for p in paris if p["statut"] == "gagne"]
-    perdus = [p for p in paris if p["statut"] == "perdu"]
-    gains  = sum(p["mise"] * (p["cote"] - 1) for p in gagnes)
-    pertes = sum(p["mise"] for p in perdus)
-    total_mise = sum(p["mise"] for p in paris)
-    roi = round((gains - pertes) / total_mise * 100, 1) if total_mise > 0 else 0
-    return {
-        "total":          len(paris),
-        "gagnes":         len(gagnes),
-        "taux_reussite":  round(len(gagnes) / len(paris) * 100, 1),
-        "roi":            roi,
-        "capital_actuel": round(get_capital(), 2),
-    }
+        return "Aucun pari termine pour le moment."
+    total = len(paris)
+    gagnes = len([p for p in paris if p["resultat"] == "gagne"])
+    pertes = len([p for p in paris if p["resultat"] == "perdu"])
+    gain_total = sum([p.get("gain", 0) for p in paris])
+    taux = round(gagnes / total * 100, 1) if total > 0 else 0
+    bankroll = get_bankroll()
+    return f"""STATISTIQUES :
+Total paris : {total}
+Gagnes : {gagnes} | Perdus : {pertes}
+Taux de reussite : {taux}%
+Gain/Perte total : {gain_total:.2f}
+Bankroll actuelle : {bankroll:.2f}"""
 
-def contexte_apprentissage():
-    stats = get_stats_historique()
-    if stats["total"] == 0:
-        return "Aucun historique disponible. Capital de depart : 50 euros."
-    return (
-        "HISTORIQUE DU BOT :\n"
-        "- Paris joues : " + str(stats["total"]) + "\n"
-        "- Taux de reussite : " + str(stats["taux_reussite"]) + "%\n"
-        "- ROI : " + str(stats["roi"]) + "%\n"
-        "- Capital actuel : " + str(stats["capital_actuel"]) + " euros\n"
-        "Si le ROI est negatif, sois plus selectif."
-    )
-
-def extraire_confiance_et_cote(texte):
-    import re
-    confiance = 0.55
-    cote      = 1.80
-    pari      = "Inconnu"
-    m = re.search(r"Niveau de confiance\s*[:\-]\s*(\d+)%", texte, re.IGNORECASE)
-    if m:
-        confiance = int(m.group(1)) / 100
-    m = re.search(r"Cote estim[ée]e?\s*[:\-]\s*([\d,.]+)", texte, re.IGNORECASE)
-    if m:
-        cote = float(m.group(1).replace(",", "."))
-    m = re.search(r"Pari conseill[ée]\s*[:\-]\s*(.+)", texte, re.IGNORECASE)
-    if m:
-        pari = m.group(1).strip()
-    return confiance, cote, pari
-
-# --- RECHERCHE WEB ---
 def recherche_web(query):
     try:
-        url    = "https://serpapi.com/search"
+        url = "https://serpapi.com/search"
         params = {"q": query, "api_key": SEARCH_API_KEY, "num": 5, "hl": "fr"}
-        data   = requests.get(url, params=params, timeout=10).json()
-        return "\n".join(
-            r.get("title", "") + " - " + r.get("snippet", "")
-            for r in data.get("organic_results", [])[:5]
-        )
+        response = requests.get(url, params=params)
+        data = response.json()
+        resultats = ""
+        for r in data.get("organic_results", [])[:5]:
+            resultats += r.get("title", "") + " - " + r.get("snippet", "") + "\n"
+        return resultats
     except:
         return ""
 
-# --- DETECTION SPORT ---
 def detecter_sport(texte):
     try:
-        chat = client_groq.chat.completions.create(
-            messages=[{"role": "user", "content":
-                "Est-ce que ce texte parle de tennis ou de football ? "
-                "Reponds uniquement par 'tennis' ou 'foot' : " + texte}],
+        chat = client.chat.completions.create(
+            messages=[{"role": "user", "content": f"Est-ce que ce texte parle de tennis ou de football? Reponds uniquement par 'tennis' ou 'foot': {texte}"}],
             model="llama-3.3-70b-versatile",
         )
-        r = chat.choices[0].message.content.lower().strip()
-        return "tennis" if "tennis" in r else "foot"
+        reponse = chat.choices[0].message.content.lower().strip()
+        if "tennis" in reponse:
+            return "tennis"
+        return "foot"
     except:
-        t = texte.lower()
-        if any(m in t for m in ["tennis", "atp", "wta", "roland", "wimbledon"]):
+        texte_lower = texte.lower()
+        if any(mot in texte_lower for mot in ["tennis", "atp", "wta", "roland", "wimbledon"]):
             return "tennis"
         return "foot"
 
-# --- DONNEES SPORTIVES ---
 def get_matchs_foot():
     try:
-        today   = datetime.now().strftime("%Y-%m-%d")
-        url     = "https://v3.football.api-sports.io/fixtures"
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = "https://v3.football.api-sports.io/fixtures"
         headers = {"x-apisports-key": FOOTBALL_API_KEY}
-        params  = {"date": today, "league": "39,140,135,78,61,2,3", "season": "2024"}
-        data    = requests.get(url, headers=headers, params=params, timeout=10).json()
-        matchs  = []
-        for m in data.get("response", []):
-            matchs.append({
-                "heure": m["fixture"]["date"][11:16],
-                "match": m["teams"]["home"]["name"] + " vs " + m["teams"]["away"]["name"],
-                "ligue": m["league"]["name"],
-            })
+        params = {"date": today, "league": "39,140,135,78,61,2,3", "season": "2024"}
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        matchs = []
+        for match in data.get("response", []):
+            heure = match["fixture"]["date"][11:16]
+            equipe1 = match["teams"]["home"]["name"]
+            equipe2 = match["teams"]["away"]["name"]
+            ligue = match["league"]["name"]
+            matchs.append({"heure": heure, "match": f"{equipe1} vs {equipe2}", "ligue": ligue})
         return matchs
     except:
         return []
 
 def get_matchs_tennis():
     try:
-        today   = datetime.now().strftime("%Y-%m-%d")
-        url     = "https://v1.tennis.api-sports.io/games"
+        today = datetime.now().strftime("%Y-%m-%d")
+        url = "https://v1.tennis.api-sports.io/games"
         headers = {"x-apisports-key": TENNIS_API_KEY}
-        data    = requests.get(url, headers=headers, params={"date": today}, timeout=10).json()
-        matchs  = []
-        for m in data.get("response", []):
+        params = {"date": today}
+        response = requests.get(url, headers=headers, params=params)
+        data = response.json()
+        matchs = []
+        for match in data.get("response", []):
             try:
+                heure = match["date"][11:16]
+                joueur1 = match["players"]["home"]["name"]
+                joueur2 = match["players"]["away"]["name"]
+                tournoi = match.get("tournament", {}).get("name", "Tournoi inconnu")
+                surface = match.get("surface", "inconnu")
                 matchs.append({
-                    "heure":   m["date"][11:16],
-                    "match":   m["players"]["home"]["name"] + " vs " + m["players"]["away"]["name"],
-                    "tournoi": m.get("tournament", {}).get("name", "Tournoi inconnu"),
-                    "surface": m.get("surface", "inconnu"),
+                    "heure": heure,
+                    "match": f"{joueur1} vs {joueur2}",
+                    "tournoi": tournoi,
+                    "surface": surface,
                 })
             except:
                 pass
@@ -188,178 +147,188 @@ def get_matchs_tennis():
     except:
         return []
 
-# --- PRONOSTIC FOOT ---
-def envoyer_pronostic_foot(match, ligue=""):
-    try:
-        capital = get_capital()
-        if capital <= 0:
-            bot.send_message(CHAT_ID, "Capital epuise !")
-            return
-
-        bot.send_message(CHAT_ID, "Match foot dans 2h !\n" + match + "\nCompetition : " + ligue + "\nAnalyse en cours...")
-
-        infos  = recherche_web(match + " stats forme composition equipe 2026")
-        infos += recherche_web(match + " blessures absents suspendus 2026")
-        infos += recherche_web(match + " cotes bookmakers pronostic 2026")
-        infos += recherche_web(match + " historique confrontations head to head")
-        infos += recherche_web(match + " classement " + ligue + " 2026")
-        infos += recherche_web(match + " buteurs forme recente 2026")
-
-        prompt = (
-            "Tu es un expert FOOTBALL en 2026. Analyse ce match avec des DONNEES REELLES uniquement.\n\n"
-            + contexte_apprentissage() + "\n\n"
-            "Infos collectees sur le web :\n" + infos + "\n\n"
-            "MATCH : " + match + "\n"
-            "COMPETITION : " + ligue + "\n\n"
-            "Fournis une analyse complete structuree exactement comme ceci :\n\n"
-            "MATCH : " + match + "\n"
-            "Competition : " + ligue + "\n\n"
-            "FORME ACTUELLE (5 derniers matchs) :\n"
-            "-> [Equipe1] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle\n"
-            "-> [Equipe2] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle\n\n"
-            "DOMICILE / EXTERIEUR :\n"
-            "-> [Equipe1] a domicile cette saison : [W-D-L]\n"
-            "-> [Equipe2] a l exterieur cette saison : [W-D-L]\n\n"
-            "JOUEURS CLES :\n"
-            "-> [Equipe1] : [Nom] - [Stat precise]\n"
-            "-> [Equipe2] : [Nom] - [Stat precise]\n\n"
-            "BLESSURES ET ABSENCES :\n"
-            "-> [Equipe1] : [Noms ou Aucune absence confirmee]\n"
-            "-> [Equipe2] : [Noms ou Aucune absence confirmee]\n\n"
-            "HEAD TO HEAD :\n"
-            "-> Historique global : [X victoires E1 / X nuls / X victoires E2]\n"
-            "-> Dernier match : [date + score]\n\n"
-            "NEWS IMPORTANTES :\n"
-            "-> [Infos recentes]\n\n"
-            "PROBABILITES :\n"
-            "-> [Equipe1] : XX%\n"
-            "-> Match nul : XX%\n"
-            "-> [Equipe2] : XX%\n\n"
-            "SCORE PROBABLE : X - X\n\n"
-            "BUTEURS PROBABLES :\n"
-            "-> [Equipe1] : [Nom] (XX% de chances)\n"
-            "-> [Equipe2] : [Nom] (XX% de chances)\n\n"
-            "NOMBRE DE BUTS :\n"
-            "-> Plus de 2.5 : XX%\n"
-            "-> Moins de 2.5 : XX%\n"
-            "-> BTTS : XX%\n\n"
-            "ANALYSE TACTIQUE :\n"
-            "-> Systemes de jeu et avantages/faiblesses\n\n"
-            "RECOMMANDATION FINALE :\n"
-            "-> Pari conseille : [PARI PRECIS]\n"
-            "-> Cote estimee : [X.XX]\n"
-            "-> Niveau de confiance : XX%\n\n"
-            "Utilise UNIQUEMENT des donnees reelles et verifiees."
-        )
-
-        chat = client_groq.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model="llama-3.3-70b-versatile",
-            max_tokens=2000,
-        )
-        analyse = chat.choices[0].message.content
-        bot.send_message(CHAT_ID, analyse)
-
-        confiance, cote, pari = extraire_confiance_et_cote(analyse)
-        if confiance >= CONFIANCE_MIN:
-            mise = calculer_mise(confiance)
-            enregistrer_pari(match, "foot", pari, cote, confiance, mise)
-            bot.send_message(CHAT_ID,
-                "Mise automatique : " + str(mise) + " euros @ " + str(cote) + "\n"
-                "Confiance : " + str(int(confiance * 100)) + "%\n"
-                "Capital restant : " + str(round(get_capital(), 2)) + " euros\n\n"
-                "/gagne si gagne\n/perdu si perdu")
-        else:
-            bot.send_message(CHAT_ID,
-                "Confiance trop faible (" + str(int(confiance * 100)) + "%) - pas de mise.\n"
-                "Capital conserve : " + str(round(capital, 2)) + " euros")
-    except Exception as e:
-        bot.send_message(CHAT_ID, "Erreur foot : " + str(e))
-
-
-# --- PRONOSTIC TENNIS ---
 def envoyer_pronostic_tennis(match, tournoi="", surface=""):
     try:
-        capital = get_capital()
-        if capital <= 0:
-            bot.send_message(CHAT_ID, "Capital epuise !")
-            return
-
-        bot.send_message(CHAT_ID, "Match tennis dans 1h !\n" + match + "\nTournoi : " + tournoi + " | Surface : " + surface + "\nAnalyse en cours...")
-
-        infos  = recherche_web(match + " tennis stats forme recente 2026")
+        bankroll = get_bankroll()
+        bot.send_message(CHAT_ID, f"Match tennis dans 1h!\n{match}\nTournoi : {tournoi} | Surface : {surface}\n\nAnalyse en cours...")
+        infos = recherche_web(match + " tennis stats forme recente 2025")
         infos += recherche_web(match + " head to head historique surface " + surface)
-        infos += recherche_web(match + " blessure actualite 2026")
-        infos += recherche_web(match + " classement ATP WTA 2026")
-        infos += recherche_web(match + " pronostic cote bookmaker 2026")
+        infos += recherche_web(match + " blessure actualite 2025")
+        infos += recherche_web(match + " classement ATP WTA 2025")
+        infos += recherche_web(match + " pronostic cote bookmaker 2025")
 
-        prompt = (
-            "Tu es un expert TENNIS en 2026. Analyse ce match avec des DONNEES REELLES uniquement.\n"
-            "Ces personnes sont des JOUEURS DE TENNIS. Ne parle JAMAIS de football.\n\n"
-            + contexte_apprentissage() + "\n\n"
-            "Infos collectees sur le web :\n" + infos + "\n\n"
-            "MATCH : " + match + "\n"
-            "TOURNOI : " + tournoi + "\n"
-            "SURFACE : " + surface + "\n\n"
-            "Fournis une analyse complete structuree exactement comme ceci :\n\n"
-            "MATCH : " + match + "\n"
-            "Tournoi : " + tournoi + " | Surface : " + surface + "\n\n"
-            "FORME RECENTE (5 derniers matchs) :\n"
-            "-> [Joueur1] : [W-L] | Derniers resultats\n"
-            "-> [Joueur2] : [W-L] | Derniers resultats\n\n"
-            "SURFACE :\n"
-            "-> Stats sur " + surface + " cette saison\n"
-            "-> Avantage : [Joueur favori et pourquoi]\n\n"
-            "HEAD TO HEAD :\n"
-            "-> Historique global : [X-Y]\n"
-            "-> Sur " + surface + " : [X-Y]\n"
-            "-> Dernier match : [date + score]\n\n"
-            "BLESSURES :\n"
-            "-> [Joueur1] : [etat ou RAS]\n"
-            "-> [Joueur2] : [etat ou RAS]\n\n"
-            "NEWS IMPORTANTES :\n"
-            "-> [Infos recentes]\n\n"
-            "PROBABILITES :\n"
-            "-> [Joueur1] : XX%\n"
-            "-> [Joueur2] : XX%\n\n"
-            "SCORE PREDIT : X-X sets\n\n"
-            "ANALYSE TACTIQUE :\n"
-            "-> Style de jeu et confrontation sur cette surface\n\n"
-            "RECOMMANDATION FINALE :\n"
-            "-> Pari conseille : [VAINQUEUR ou SETS ou HANDICAP]\n"
-            "-> Cote estimee : [X.XX]\n"
-            "-> Niveau de confiance : XX%\n\n"
-            "Utilise UNIQUEMENT des donnees reelles et verifiees."
-        )
+        prompt = f"""Tu es un expert TENNIS en 2025. Ces personnes sont des JOUEURS DE TENNIS. Ne parle JAMAIS de football.
+Infos: {infos}
+MATCH : {match} | TOURNOI : {tournoi} | SURFACE : {surface}
 
-        chat = client_groq.chat.completions.create(
+Reponds exactement dans ce format :
+
+MATCH : {match}
+Tournoi : {tournoi} | Surface : {surface}
+
+FORME RECENTE :
+[Joueur1] : derniers resultats
+[Joueur2] : derniers resultats
+
+SURFACE :
+Avantage : [qui et pourquoi]
+
+HEAD TO HEAD :
+Historique : [X-Y]
+Dernier match : [date + score]
+
+BLESSURES :
+[Joueur1] : [etat ou RAS]
+[Joueur2] : [etat ou RAS]
+
+NEWS : [infos importantes]
+
+PROBABILITES :
+[Joueur1] : XX%
+[Joueur2] : XX%
+
+SCORE PREDIT : X-X sets
+
+RECOMMANDATION :
+Pari : [...]
+Cote estimee : [X.XX]
+Confiance : XX%"""
+
+        chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
             max_tokens=2000,
         )
-        analyse = chat.choices[0].message.content
-        bot.send_message(CHAT_ID, analyse)
+        reponse = chat.choices[0].message.content
 
-        confiance, cote, pari = extraire_confiance_et_cote(analyse)
-        if confiance >= CONFIANCE_MIN:
-            mise = calculer_mise(confiance)
-            enregistrer_pari(match, "tennis", pari, cote, confiance, mise)
-            bot.send_message(CHAT_ID,
-                "Mise automatique : " + str(mise) + " euros @ " + str(cote) + "\n"
-                "Confiance : " + str(int(confiance * 100)) + "%\n"
-                "Capital restant : " + str(round(get_capital(), 2)) + " euros\n\n"
-                "/gagne si gagne\n/perdu si perdu")
-        else:
-            bot.send_message(CHAT_ID,
-                "Confiance trop faible (" + str(int(confiance * 100)) + "%) - pas de mise.\n"
-                "Capital conserve : " + str(round(capital, 2)) + " euros")
+        try:
+            lignes = reponse.lower().split("\n")
+            confiance = 65
+            cote = 1.80
+            pari = "Vainqueur"
+            for ligne in lignes:
+                if "confiance" in ligne:
+                    import re
+                    nums = re.findall(r'\d+', ligne)
+                    if nums:
+                        confiance = int(nums[0])
+                if "cote" in ligne:
+                    import re
+                    nums = re.findall(r'\d+\.?\d*', ligne)
+                    if nums:
+                        cote = float(nums[0])
+                if "pari" in ligne and ":" in ligne:
+                    pari = ligne.split(":")[-1].strip()
+            mise = calculer_mise(confiance, bankroll)
+            sauvegarder_pari(match, "tennis", pari, confiance, mise, cote)
+            reponse += f"\n\nBANKROLL : {bankroll:.2f}\nMISE CONSEILLEE : {mise:.2f} ({round(mise/bankroll*100,1)}% du capital)"
+        except:
+            pass
+
+        bot.send_message(CHAT_ID, reponse)
     except Exception as e:
-        bot.send_message(CHAT_ID, "Erreur tennis : " + str(e))
+        bot.send_message(CHAT_ID, f"Erreur tennis: {str(e)}")
 
+def envoyer_pronostic_foot(match, ligue=""):
+    try:
+        bankroll = get_bankroll()
+        bot.send_message(CHAT_ID, f"Match foot dans 2h!\n{match}\nCompetition : {ligue}\n\nAnalyse en cours...")
+        infos = recherche_web(match + " stats forme composition equipe 2025")
+        infos += recherche_web(match + " blessures absents suspendus 2025")
+        infos += recherche_web(match + " cotes bookmakers pronostic 2025")
+        infos += recherche_web(match + " historique confrontations head to head")
+        infos += recherche_web(match + " classement " + ligue + " 2025")
+        infos += recherche_web(match + " buteurs forme recente 2025")
 
-# --- SCHEDULER ---
+        prompt = f"""Tu es un expert FOOTBALL en 2025.
+Mbappe joue au Real Madrid. Messi joue a l'Inter Miami. Neymar ne joue plus au PSG.
+Utilise UNIQUEMENT les joueurs actuels.
+Infos: {infos}
+MATCH : {match} | COMPETITION : {ligue}
+
+Reponds exactement dans ce format :
+
+MATCH : {match}
+Competition : {ligue}
+
+FORME ACTUELLE :
+[Equipe1] : W-D-L | Serie actuelle
+[Equipe2] : W-D-L | Serie actuelle
+
+DOMICILE/EXTERIEUR :
+[Equipe1] domicile : W-D-L
+[Equipe2] exterieur : W-D-L
+
+JOUEURS CLES 2025 :
+[Equipe1] : [Nom] - [stats]
+[Equipe2] : [Nom] - [stats]
+
+BLESSURES :
+[Equipe1] : [noms ou aucune]
+[Equipe2] : [noms ou aucune]
+
+HEAD TO HEAD :
+Historique : [X-Y-Z]
+Dernier match : [date + score]
+
+NEWS : [infos importantes]
+
+PROBABILITES :
+[Equipe1] : XX%
+Match nul : XX%
+[Equipe2] : XX%
+
+SCORE PROBABLE : X-X
+
+BUTEURS :
+[Equipe1] : [Nom] XX%
+[Equipe2] : [Nom] XX%
+
+BUTS :
+Plus 2.5 : XX% | Moins 2.5 : XX% | BTTS : XX%
+
+RECOMMANDATION :
+Pari : [...]
+Cote estimee : [X.XX]
+Confiance : XX%"""
+
+        chat = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            max_tokens=2000,
+        )
+        reponse = chat.choices[0].message.content
+
+        try:
+            lignes = reponse.lower().split("\n")
+            confiance = 65
+            cote = 1.80
+            pari = "Victoire domicile"
+            for ligne in lignes:
+                if "confiance" in ligne:
+                    import re
+                    nums = re.findall(r'\d+', ligne)
+                    if nums:
+                        confiance = int(nums[0])
+                if "cote" in ligne:
+                    import re
+                    nums = re.findall(r'\d+\.?\d*', ligne)
+                    if nums:
+                        cote = float(nums[0])
+                if "pari" in ligne and ":" in ligne:
+                    pari = ligne.split(":")[-1].strip()
+            mise = calculer_mise(confiance, bankroll)
+            sauvegarder_pari(match, "foot", pari, confiance, mise, cote)
+            reponse += f"\n\nBANKROLL : {bankroll:.2f}\nMISE CONSEILLEE : {mise:.2f} ({round(mise/bankroll*100,1)}% du capital)"
+        except:
+            pass
+
+        bot.send_message(CHAT_ID, reponse)
+    except Exception as e:
+        bot.send_message(CHAT_ID, f"Erreur foot: {str(e)}")
+
 def verifier_matchs():
-    maintenant    = datetime.now()
+    maintenant = datetime.now()
     heure_dans_2h = (maintenant + timedelta(hours=2)).strftime("%H:%M")
     heure_dans_1h = (maintenant + timedelta(hours=1)).strftime("%H:%M")
     for match in get_matchs_foot():
@@ -369,82 +338,66 @@ def verifier_matchs():
         if match["heure"] == heure_dans_1h:
             envoyer_pronostic_tennis(match["match"], match.get("tournoi", ""), match.get("surface", ""))
 
+def run_scheduler():
+    schedule.every(1).minutes.do(verifier_matchs)
+    while True:
+        schedule.run_pending()
+        time.sleep(30)
 
-# --- COMMANDES TELEGRAM ---
+class HealthCheck(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args):
+        pass
+
 @bot.message_handler(commands=["start"])
-def cmd_start(message):
-    capital = get_capital()
-    bot.reply_to(message,
-        "Bot de pronostics actif !\n"
-        "Capital : " + str(round(capital, 2)) + " euros\n\n"
-        "Commandes :\n"
-        "/capital - capital et stats\n"
-        "/historique - 5 derniers paris\n"
-        "/gagne - pari gagne\n"
-        "/perdu - pari perdu\n"
-        "/encours - paris en attente")
+def start(message):
+    bankroll = get_bankroll()
+    bot.reply_to(message, f"Bot de pronostics actif!\n\nFoot : analyse 2h avant\nTennis : analyse 1h avant\n\nCapital : {bankroll:.2f}\n\nCommandes:\n/stats - voir tes statistiques\n/bankroll - voir ton capital\n/gagne [match] - marquer un pari gagne\n/perdu [match] - marquer un pari perdu")
 
-@bot.message_handler(commands=["capital"])
-def cmd_capital(message):
-    stats = get_stats_historique()
-    bot.reply_to(message,
-        "Capital actuel : " + str(stats["capital_actuel"]) + " euros\n"
-        "Capital initial : " + str(CAPITAL_INITIAL) + " euros\n"
-        "Paris joues : " + str(stats["total"]) + "\n"
-        "Gagnes : " + str(stats["gagnes"]) + " (" + str(stats["taux_reussite"]) + "%)\n"
-        "ROI : " + str(stats["roi"]) + "%")
+@bot.message_handler(commands=["stats"])
+def stats(message):
+    bot.reply_to(message, get_statistiques())
+
+@bot.message_handler(commands=["bankroll"])
+def bankroll_cmd(message):
+    bankroll = get_bankroll()
+    bot.reply_to(message, f"Capital actuel : {bankroll:.2f}\nCapital initial : {CAPITAL_INITIAL:.2f}\nProfit : {bankroll - CAPITAL_INITIAL:.2f}")
 
 @bot.message_handler(commands=["gagne"])
-def cmd_gagne(message):
-    pari = col_paris.find_one({"statut": "en_attente"}, sort=[("date", -1)])
-    if not pari:
-        bot.reply_to(message, "Aucun pari en attente.")
-        return
-    gain = round(pari["mise"] * pari["cote"], 2)
-    set_capital(get_capital() + gain)
-    col_paris.update_one({"_id": pari["_id"]}, {"$set": {"statut": "gagne", "gain": gain}})
-    bot.reply_to(message,
-        "Pari gagne !\n"
-        "Match : " + pari["match"] + "\n"
-        "Mise : " + str(pari["mise"]) + " euros @ " + str(pari["cote"]) + "\n"
-        "Gain : +" + str(gain) + " euros\n"
-        "Nouveau capital : " + str(round(get_capital(), 2)) + " euros")
+def pari_gagne(message):
+    try:
+        match = message.text.replace("/gagne", "").strip()
+        pari = collection_paris.find_one({"match": {"$regex": match, "$options": "i"}, "resultat": "en attente"})
+        if pari:
+            gain = round(pari["mise"] * pari["cote"] - pari["mise"], 2)
+            bankroll = get_bankroll()
+            nouvelle_bankroll = round(bankroll + gain, 2)
+            update_bankroll(nouvelle_bankroll)
+            collection_paris.update_one({"_id": pari["_id"]}, {"$set": {"resultat": "gagne", "gain": gain}})
+            bot.reply_to(message, f"Pari gagne!\nGain : +{gain}\nNouvelle bankroll : {nouvelle_bankroll}")
+        else:
+            bot.reply_to(message, "Pari non trouve. Verifie le nom du match.")
+    except Exception as e:
+        bot.reply_to(message, f"Erreur: {str(e)}")
 
 @bot.message_handler(commands=["perdu"])
-def cmd_perdu(message):
-    pari = col_paris.find_one({"statut": "en_attente"}, sort=[("date", -1)])
-    if not pari:
-        bot.reply_to(message, "Aucun pari en attente.")
-        return
-    col_paris.update_one({"_id": pari["_id"]}, {"$set": {"statut": "perdu", "gain": 0}})
-    bot.reply_to(message,
-        "Pari perdu.\n"
-        "Match : " + pari["match"] + "\n"
-        "Mise perdue : -" + str(pari["mise"]) + " euros\n"
-        "Capital restant : " + str(round(get_capital(), 2)) + " euros")
-
-@bot.message_handler(commands=["encours"])
-def cmd_encours(message):
-    paris = list(col_paris.find({"statut": "en_attente"}).sort("date", -1))
-    if not paris:
-        bot.reply_to(message, "Aucun pari en attente.")
-        return
-    lignes = ["Paris en attente :\n"]
-    for p in paris:
-        lignes.append("- " + p["match"] + " | " + p["pari"] + " | " + str(p["mise"]) + " euros @ " + str(p["cote"]))
-    bot.reply_to(message, "\n".join(lignes))
-
-@bot.message_handler(commands=["historique"])
-def cmd_historique(message):
-    paris = list(col_paris.find().sort("date", -1).limit(5))
-    if not paris:
-        bot.reply_to(message, "Aucun historique disponible.")
-        return
-    lignes = ["5 derniers paris :\n"]
-    for p in paris:
-        emoji = "OK" if p["statut"] == "gagne" else ("X" if p["statut"] == "perdu" else "?")
-        lignes.append(emoji + " " + p["match"] + " | " + p["pari"] + " | " + str(p["mise"]) + " euros @ " + str(p["cote"]) + " | " + p["statut"])
-    bot.reply_to(message, "\n".join(lignes))
+def pari_perdu(message):
+    try:
+        match = message.text.replace("/perdu", "").strip()
+        pari = collection_paris.find_one({"match": {"$regex": match, "$options": "i"}, "resultat": "en attente"})
+        if pari:
+            bankroll = get_bankroll()
+            nouvelle_bankroll = round(bankroll - pari["mise"], 2)
+            update_bankroll(nouvelle_bankroll)
+            collection_paris.update_one({"_id": pari["_id"]}, {"$set": {"resultat": "perdu", "gain": -pari["mise"]}})
+            bot.reply_to(message, f"Pari perdu.\nPerte : -{pari['mise']}\nNouvelle bankroll : {nouvelle_bankroll}")
+        else:
+            bot.reply_to(message, "Pari non trouve. Verifie le nom du match.")
+    except Exception as e:
+        bot.reply_to(message, f"Erreur: {str(e)}")
 
 @bot.message_handler(func=lambda m: True)
 def analyser_message(message):
@@ -454,27 +407,10 @@ def analyser_message(message):
     else:
         envoyer_pronostic_foot(message.text)
 
-
-# --- HEALTH CHECK ---
-class HealthCheck(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-    def log_message(self, *args):
-        pass
-
-
-# --- MAIN ---
-def run_scheduler():
-    schedule.every(1).minutes.do(verifier_matchs)
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
-
 if __name__ == "__main__":
-    print("Bot demarre ! Capital : " + str(get_capital()) + " euros")
-    threading.Thread(target=run_scheduler, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", 8080), HealthCheck)
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheck)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    threading.Thread(target=run_scheduler, daemon=True).start()
+    print("Bot demarre!")
     bot.infinity_polling()
