@@ -130,7 +130,7 @@ def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
 
 def get_statistiques():
     try:
-        paris = list(collection_paris.find({"resultat": {"$ne": "en attente"}}))
+        paris = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
     except PyMongoError as e:
         log.error("get_statistiques : %s", e)
         return "Erreur de connexion a la base de donnees."
@@ -231,7 +231,111 @@ def score_match_foot(nom_match):
         return None
 
 
-def verifier_resultats_auto():
+def score_live(nom_match, sport):
+    """Recupere le score EN DIRECT d'un match en cours.
+
+    Renvoie un texte decrivant l'etat du match (score, minute/sets) ou None.
+    """
+    try:
+        if sport == "foot" and FOOTBALL_API_KEY:
+            r = requests.get(
+                "https://v3.football.api-sports.io/fixtures",
+                headers={"x-apisports-key": FOOTBALL_API_KEY},
+                params={"live": "all"},
+                timeout=10,
+            )
+            for m in r.json().get("response", []):
+                dom = m["teams"]["home"]["name"]
+                ext = m["teams"]["away"]["name"]
+                if dom.lower() in nom_match.lower() or ext.lower() in nom_match.lower():
+                    minute = m["fixture"]["status"].get("elapsed", "?")
+                    bd, be = m["goals"]["home"], m["goals"]["away"]
+                    return f"EN DIRECT : {dom} {bd} - {be} {ext} ({minute}e minute)"
+            return None
+
+        if sport == "tennis" and TENNIS_API_KEY:
+            r = requests.get(
+                "https://v1.tennis.api-sports.io/games",
+                headers={"x-apisports-key": TENNIS_API_KEY},
+                params={"date": datetime.now().strftime("%Y-%m-%d")},
+                timeout=10,
+            )
+            for m in r.json().get("response", []):
+                try:
+                    j1 = m["players"]["home"]["name"]
+                    j2 = m["players"]["away"]["name"]
+                    if j1.lower() in nom_match.lower() or j2.lower() in nom_match.lower():
+                        statut = m.get("status", {}).get("long", "en cours")
+                        score = m.get("scores", m.get("score", "score indisponible"))
+                        return f"EN DIRECT : {j1} vs {j2} | {statut} | {score}"
+                except (KeyError, TypeError):
+                    continue
+            return None
+    except (requests.RequestException, ValueError, KeyError) as e:
+        log.error("score_live : %s", e)
+        return None
+    return None
+
+
+def analyser_live(match, sport):
+    """Analyse un match EN COURS : recupere le score live + recommande
+    les paris les plus probables a l'instant present."""
+    etat = score_live(match, sport)
+    if not etat:
+        etat = ("Score live indisponible pour ce match (peut-etre pas encore "
+                "commence, deja fini, ou hors des ligues suivies).")
+
+    if sport == "tennis":
+        infos = recherche_web(f"{match} tennis score live en direct 2026")
+        infos += recherche_web(f"{match} tennis momentum set en cours")
+    else:
+        infos = recherche_web(f"{match} football score live en direct 2026")
+        infos += recherche_web(f"{match} football momentum cartons occasions")
+
+    prompt = f"""Tu es un expert en paris sportifs LIVE (en direct).
+Le match est DEJA EN COURS. Voici son etat actuel :
+{etat}
+
+Infos web complementaires :
+{infos}
+
+MATCH : {match}
+
+Donne une mise a jour LIVE en francais, structuree ainsi :
+
+⚡ MISE A JOUR LIVE : {match}
+📍 Etat actuel : [score et temps ecoule]
+
+📊 SITUATION :
+→ [Qui domine, dynamique du match, ce qui a change]
+
+🎯 PARIS LES PLUS PROBABLES MAINTENANT :
+→ [Pari 1] : [probabilite %] | [justification courte]
+→ [Pari 2] : [probabilite %] | [justification courte]
+→ [Pari 3] : [probabilite %] | [justification courte]
+
+💡 RECOMMANDATION LIVE :
+PARI: [le pari le plus sur a l'instant T]
+CONFIANCE: [0-100]
+COTE: [cote estimee]
+
+Base-toi sur l'etat REEL du match. Si tu n'as pas le score exact, dis-le
+clairement et reste prudent."""
+
+    try:
+        completion = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=2000,
+        )
+        return completion.choices[0].message.content
+    except Exception as e:
+        log.error("analyser_live : %s", e)
+        return "Erreur lors de l'analyse live. Reessaie dans un instant."
+
+
+
     """Verifie les paris foot 1N2 en attente et les regle si le match est fini."""
     try:
         en_attente = list(collection_paris.find({
@@ -541,7 +645,9 @@ def cmd_start(message):
         "/historique - derniers paris\n"
         "/enattente - paris a regler\n"
         "/gagne <numero> - marquer un pari gagne\n"
-        "/perdu <numero> - marquer un pari perdu",
+        "/perdu <numero> - marquer un pari perdu\n\n"
+        "Sous chaque pronostic : boutons Gagne / Perdu / Non pris / "
+        "Mise a jour live.",
     )
 
 
@@ -629,6 +735,72 @@ def cmd_perdu(message):
     _regler_par_numero(message, gagne=False)
 
 
+@bot.callback_query_handler(func=lambda c: c.data and c.data[:2] in ("g:", "p:", "n:", "l:"))
+def clic_bouton(call):
+    """Reagit aux boutons sous un pronostic : gagne, perdu, non pris, live."""
+    action, pari_id = call.data.split(":", 1)
+    try:
+        pari = collection_paris.find_one({"_id": pari_id})
+    except PyMongoError:
+        bot.answer_callback_query(call.id, "Erreur base de donnees.")
+        return
+    if not pari:
+        bot.answer_callback_query(call.id, "Pari introuvable.")
+        return
+
+    # --- Bouton Mise a jour live : relance une analyse du match en cours ---
+    if action == "l":
+        bot.answer_callback_query(call.id, "Analyse live en cours...")
+        bot.send_message(call.message.chat.id, "🔄 Mise a jour live en cours...")
+        analyse = analyser_live(pari["match"], pari.get("sport", "foot"))
+        for i in range(0, len(analyse), 4000):
+            bot.send_message(call.message.chat.id, analyse[i:i + 4000])
+        return
+
+    # Pour les autres actions, le pari ne doit pas etre deja regle.
+    if pari.get("resultat") in ("gagne", "perdu", "non pris"):
+        bot.answer_callback_query(call.id, f"Deja regle : {pari['resultat']}.")
+        return
+
+    # --- Bouton Non pris : on sort le pari des stats sans toucher la bankroll ---
+    if action == "n":
+        try:
+            collection_paris.update_one(
+                {"_id": pari_id},
+                {"$set": {"resultat": "non pris", "gain": 0}},
+            )
+        except PyMongoError:
+            bot.answer_callback_query(call.id, "Erreur base de donnees.")
+            return
+        bot.answer_callback_query(call.id, "Marque comme non pris.")
+        try:
+            bot.edit_message_reply_markup(
+                call.message.chat.id, call.message.message_id, reply_markup=None)
+            bot.send_message(
+                call.message.chat.id,
+                f"🚫 {pari['match']}\nPari NON PRIS (exclu des stats et de la bankroll).",
+            )
+        except Exception as e:
+            log.error("clic non pris : %s", e)
+        return
+
+    # --- Boutons Gagne / Perdu ---
+    gagne = (action == "g")
+    gain, bankroll = regler_pari(pari, gagne)
+    statut = "GAGNE ✅" if gagne else "PERDU ❌"
+    bot.answer_callback_query(call.id, f"{statut} | Gain {gain:+.2f}")
+    try:
+        bot.edit_message_reply_markup(
+            call.message.chat.id, call.message.message_id, reply_markup=None)
+        bot.send_message(
+            call.message.chat.id,
+            f"{pari['match']}\n{statut} | Gain : {gain:+.2f}\n"
+            f"Nouvelle bankroll : {bankroll:.2f}",
+        )
+    except Exception as e:
+        log.error("clic_bouton : %s", e)
+
+
 @bot.message_handler(commands=["matchs"])
 def cmd_matchs(message):
     foot = get_matchs_foot()
@@ -654,7 +826,7 @@ def envoyer_analyse(chat_id, texte, sport):
     pari, confiance, cote = parser_analyse(analyse)
     bankroll = get_bankroll()
     mise = calculer_mise(confiance, cote, bankroll)
-    sauvegarder_pari(texte, sport, pari, confiance, mise, cote)
+    pari_id = sauvegarder_pari(texte, sport, pari, confiance, mise, cote)
 
     reponse = (
         f"{analyse}\n\n"
@@ -663,9 +835,26 @@ def envoyer_analyse(chat_id, texte, sport):
         "peuvent etre incertaines ou non a jour. Verifie toujours avant de parier."
     )
 
-    # Telegram limite a 4096 caracteres : on decoupe si besoin
-    for i in range(0, len(reponse), 4000):
-        bot.send_message(chat_id, reponse[i:i + 4000])
+    # Boutons de suivi attaches au dernier morceau du message.
+    clavier = telebot.types.InlineKeyboardMarkup()
+    if pari_id:
+        clavier.add(
+            telebot.types.InlineKeyboardButton("✅ Gagne", callback_data=f"g:{pari_id}"),
+            telebot.types.InlineKeyboardButton("❌ Perdu", callback_data=f"p:{pari_id}"),
+        )
+        clavier.add(
+            telebot.types.InlineKeyboardButton("🚫 Non pris", callback_data=f"n:{pari_id}"),
+            telebot.types.InlineKeyboardButton("🔄 Mise a jour live", callback_data=f"l:{pari_id}"),
+        )
+
+    # Telegram limite a 4096 caracteres : on decoupe si besoin.
+    morceaux = [reponse[i:i + 4000] for i in range(0, len(reponse), 4000)]
+    for idx, morceau in enumerate(morceaux):
+        dernier = (idx == len(morceaux) - 1)
+        bot.send_message(
+            chat_id, morceau,
+            reply_markup=clavier if (dernier and pari_id) else None,
+        )
 
 
 # ---------------------------------------------------------------------------
