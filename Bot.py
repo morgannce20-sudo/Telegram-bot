@@ -291,9 +291,8 @@ def score_match_foot(nom_match):
         r = requests.get(
             "https://v3.football.api-sports.io/fixtures",
             headers={"x-apisports-key": FOOTBALL_API_KEY},
-            params={"date": datetime.now().strftime("%Y-%m-%d"),
-                    "league": "39,140,135,78,61,2,3", "season": SAISON_FOOT},
-            timeout=10,
+            params={"date": datetime.now().strftime("%Y-%m-%d")},
+            timeout=15,
         )
         for m in r.json().get("response", []):
             dom = m["teams"]["home"]["name"]
@@ -507,20 +506,31 @@ def stats_reelles_foot(nom_match):
     head = {"x-apisports-key": FOOTBALL_API_KEY}
     base = "https://v3.football.api-sports.io"
     try:
-        # 1. Retrouver le match du jour pour obtenir les IDs equipes + ligue.
+        # 1. Identifier les deux equipes par leur nom (clubs OU selections).
+        #    On cherche le fixture du jour SANS filtre de ligue, pour couvrir
+        #    aussi les matchs internationaux (amicaux, qualifs, Coupe du monde).
+        aujourd_hui = datetime.now().strftime("%Y-%m-%d")
+        fixture = None
+
+        # a) On essaie d'abord tous les matchs du jour, toutes competitions.
         r = requests.get(
             f"{base}/fixtures", headers=head,
-            params={"date": datetime.now().strftime("%Y-%m-%d"),
-                    "league": "39,140,135,78,61,2,3", "season": SAISON_FOOT},
-            timeout=10,
+            params={"date": aujourd_hui}, timeout=15,
         )
-        fixture = None
         for m in r.json().get("response", []):
             dom = m["teams"]["home"]["name"]
             ext = m["teams"]["away"]["name"]
-            if dom.lower() in nom_match.lower() or ext.lower() in nom_match.lower():
+            if dom.lower() in nom_match.lower() and ext.lower() in nom_match.lower():
                 fixture = m
                 break
+        # b) Sinon, on accepte un match ou une seule des deux equipes correspond.
+        if not fixture:
+            for m in r.json().get("response", []):
+                dom = m["teams"]["home"]["name"]
+                ext = m["teams"]["away"]["name"]
+                if dom.lower() in nom_match.lower() or ext.lower() in nom_match.lower():
+                    fixture = m
+                    break
         if not fixture:
             return ""
 
@@ -529,9 +539,11 @@ def stats_reelles_foot(nom_match):
         nom_dom = fixture["teams"]["home"]["name"]
         nom_ext = fixture["teams"]["away"]["name"]
         id_ligue = fixture["league"]["id"]
+        saison_match = fixture["league"].get("season", SAISON_FOOT)
         id_fixture = fixture["fixture"]["id"]
 
         lignes = ["=== DONNEES REELLES API (fiables) ==="]
+        lignes.append(f'Competition : {fixture["league"].get("name", "?")}')
 
         # 2. Forme recente : 5 derniers matchs de chaque equipe.
         def forme(team_id, team_nom):
@@ -577,12 +589,12 @@ def stats_reelles_foot(nom_match):
         if h2h:
             lignes.append("Confrontations directes : " + " | ".join(h2h))
 
-        # 4. Classement des 2 equipes dans la ligue.
-        rs = requests.get(
-            f"{base}/standings", headers=head,
-            params={"league": id_ligue, "season": SAISON_FOOT}, timeout=10,
-        )
+        # 4. Classement des 2 equipes dans la ligue (si c'est un championnat).
         try:
+            rs = requests.get(
+                f"{base}/standings", headers=head,
+                params={"league": id_ligue, "season": saison_match}, timeout=10,
+            )
             classement = rs.json()["response"][0]["league"]["standings"][0]
             for equipe in classement:
                 if equipe["team"]["id"] in (id_dom, id_ext):
@@ -590,7 +602,8 @@ def stats_reelles_foot(nom_match):
                         f'{equipe["team"]["name"]} : {equipe["rank"]}e, '
                         f'{equipe["points"]} pts, forme {equipe.get("form", "?")}'
                     )
-        except (KeyError, IndexError, TypeError):
+        except (KeyError, IndexError, TypeError, requests.RequestException):
+            # Pas de classement pour un amical / match international : normal.
             pass
 
         # 5. Blessures et absences confirmees pour ce match.
@@ -831,13 +844,17 @@ def parser_analyse(texte):
 def get_matchs_foot():
     if not FOOTBALL_API_KEY:
         return []
+    # Ligues de clubs : PL(39) Liga(140) SerieA(135) Bundesliga(78) L1(61)
+    # ChampionsL(2) EuropaL(3). Internationaux : CdM(1) Euro(4) Nations(5)
+    # amicaux(10) + qualifs CdM par confederation (29,30,31,32,33,34).
+    ligues = "1,2,3,4,5,10,29,30,31,32,33,34,39,61,78,135,140"
     try:
         r = requests.get(
             "https://v3.football.api-sports.io/fixtures",
             headers={"x-apisports-key": FOOTBALL_API_KEY},
             params={"date": datetime.now().strftime("%Y-%m-%d"),
-                    "league": "39,140,135,78,61,2,3", "season": SAISON_FOOT},
-            timeout=10,
+                    "league": ligues, "season": SAISON_FOOT},
+            timeout=15,
         )
         data = r.json()
         matchs = []
