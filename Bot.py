@@ -234,6 +234,60 @@ def tableau_bord_bankroll(user_id):
     )
 
 
+def rapport_efficacite(user_id):
+    """Mesure la fiabilite reelle : quand le bot annonce X% de confiance,
+    gagne-t-il vraiment X% du temps ? Aussi : reussite par sport."""
+    try:
+        regles = list(collection_paris.find(
+            {"user_id": str(user_id), "resultat": {"$in": ["gagne", "perdu"]}}))
+    except PyMongoError as e:
+        log.error("rapport_efficacite : %s", e)
+        return "Erreur de connexion a la base de donnees."
+    if not regles:
+        return ("Pas encore de paris regles. Le rapport d'efficacite "
+                "s'enrichit au fur et a mesure que tu gagnes/perds des paris.")
+
+    # Par tranche de confiance.
+    tranches = {"50-64%": [], "65-79%": [], "80-100%": []}
+    for p in regles:
+        c = p.get("confiance", 0)
+        gagne = p["resultat"] == "gagne"
+        if c < 65:
+            tranches["50-64%"].append(gagne)
+        elif c < 80:
+            tranches["65-79%"].append(gagne)
+        else:
+            tranches["80-100%"].append(gagne)
+
+    lignes = ["🎯 EFFICACITE DU BOT\n",
+              "Fiabilite par niveau de confiance :"]
+    for nom, liste in tranches.items():
+        if liste:
+            reussite = round(sum(liste) / len(liste) * 100, 1)
+            lignes.append(f"  Confiance {nom} : {reussite}% reussite "
+                          f"({sum(liste)}/{len(liste)})")
+        else:
+            lignes.append(f"  Confiance {nom} : pas encore de pari")
+
+    # Par sport.
+    lignes.append("\nReussite par sport :")
+    for sport in ("foot", "tennis"):
+        s = [p["resultat"] == "gagne" for p in regles if p.get("sport") == sport]
+        if s:
+            r = round(sum(s) / len(s) * 100, 1)
+            lignes.append(f"  {sport.capitalize()} : {r}% ({sum(s)}/{len(s)})")
+        else:
+            lignes.append(f"  {sport.capitalize()} : aucun pari regle")
+
+    # Lecture : la confiance est-elle bien calibree ?
+    lignes.append(
+        "\n💡 Lecture : si la reussite reelle est proche du % de confiance "
+        "annonce, le bot est bien calibre. Si elle est tres en dessous, "
+        "il est trop optimiste (prudence)."
+    )
+    return "\n".join(lignes)
+
+
 # ---------------------------------------------------------------------------
 # Reglement des paris, apprentissage & verification automatique
 # ---------------------------------------------------------------------------
@@ -669,6 +723,90 @@ def stats_reelles_foot(nom_match):
         return ""
 
 
+def cotes_reelles_foot(nom_match):
+    """Recupere les vraies cotes 1N2 (domicile / nul / exterieur) du match
+    via l'API bookmakers. Renvoie un dict {dom, nul, ext, dom_nom, ext_nom}
+    ou None si indisponible.
+    """
+    if not FOOTBALL_API_KEY:
+        return None
+    head = {"x-apisports-key": FOOTBALL_API_KEY}
+    base = "https://v3.football.api-sports.io"
+    try:
+        # Retrouver le fixture du jour.
+        r = requests.get(
+            f"{base}/fixtures", headers=head,
+            params={"date": datetime.now().strftime("%Y-%m-%d")}, timeout=15,
+        )
+        fixture = None
+        for m in r.json().get("response", []):
+            dom = m["teams"]["home"]["name"]
+            ext = m["teams"]["away"]["name"]
+            if dom.lower() in nom_match.lower() or ext.lower() in nom_match.lower():
+                fixture = m
+                break
+        if not fixture:
+            return None
+        id_fixture = fixture["fixture"]["id"]
+        nom_dom = fixture["teams"]["home"]["name"]
+        nom_ext = fixture["teams"]["away"]["name"]
+
+        # Recuperer les cotes 1N2 (bet "Match Winner", id 1).
+        ro = requests.get(
+            f"{base}/odds", headers=head,
+            params={"fixture": id_fixture, "bet": 1}, timeout=15,
+        )
+        reponse = ro.json().get("response", [])
+        if not reponse:
+            return None
+        # On prend le premier bookmaker disponible.
+        bookmakers = reponse[0].get("bookmakers", [])
+        if not bookmakers:
+            return None
+        valeurs = bookmakers[0]["bets"][0]["values"]
+        cotes = {}
+        for v in valeurs:
+            nom = v["value"].lower()
+            if nom in ("home", "1"):
+                cotes["dom"] = float(v["odd"])
+            elif nom in ("draw", "x"):
+                cotes["nul"] = float(v["odd"])
+            elif nom in ("away", "2"):
+                cotes["ext"] = float(v["odd"])
+        if not cotes:
+            return None
+        cotes["dom_nom"] = nom_dom
+        cotes["ext_nom"] = nom_ext
+        return cotes
+    except (requests.RequestException, ValueError, KeyError, IndexError) as e:
+        log.error("cotes_reelles_foot : %s", e)
+        return None
+
+
+def cote_reelle_pour_pari(pari_txt, sport):
+    """Si le pari est un 1N2 foot et qu'on a une vraie cote, la renvoie.
+    Sinon renvoie None (on garde alors l'estimation de l'IA)."""
+    if sport != "foot" or not pari_txt:
+        return None
+    cotes = cotes_reelles_foot(pari_txt)
+    if not cotes:
+        return None
+    p = pari_txt.lower()
+    dom_nom = cotes.get("dom_nom", "").lower()
+    ext_nom = cotes.get("ext_nom", "").lower()
+    if "nul" in p and "nul" not in dom_nom and "nul" not in ext_nom:
+        return cotes.get("nul")
+    if dom_nom and dom_nom in p:
+        return cotes.get("dom")
+    if ext_nom and ext_nom in p:
+        return cotes.get("ext")
+    if "domicile" in p or "victoire 1" in p:
+        return cotes.get("dom")
+    if "exterieur" in p or "victoire 2" in p:
+        return cotes.get("ext")
+    return None
+
+
 def analyser_match(match, sport):
     if sport == "tennis":
         infos = recherche_web(f"{match} tennis stats forme recente 2026")
@@ -930,6 +1068,7 @@ def cmd_start(message):
         "/matchs - matchs du jour\n"
         "/stats - statistiques\n"
         "/bankroll - capital actuel\n"
+        "/efficacite - fiabilite du bot (taux reel par confiance)\n"
         "/historique - derniers paris\n"
         "/enattente - paris a regler\n"
         "/gagne <numero> - marquer un pari gagne\n"
@@ -990,6 +1129,11 @@ def cmd_reset(message):
     except PyMongoError as e:
         log.error("cmd_reset : %s", e)
         bot.reply_to(message, "Erreur lors de la remise a zero.")
+
+
+@bot.message_handler(commands=["efficacite"])
+def cmd_efficacite(message):
+    bot.reply_to(message, rapport_efficacite(message.chat.id))
 
 
 @bot.message_handler(commands=["historique"])
@@ -1184,6 +1328,15 @@ def envoyer_analyse(chat_id, texte, sport):
     et le pari sont propres a l'utilisateur (chat_id)."""
     analyse = analyser_match(texte, sport)
     pari, confiance, cote = parser_analyse(analyse)
+
+    # On tente de remplacer la cote estimee par l'IA par la VRAIE cote
+    # bookmaker (foot 1N2 uniquement). Sinon on garde l'estimation.
+    cote_source = "estimee"
+    vraie_cote = cote_reelle_pour_pari(pari, sport)
+    if vraie_cote:
+        cote = vraie_cote
+        cote_source = "reelle"
+
     bankroll = get_bankroll(chat_id)
     mise = calculer_mise(chat_id, confiance, cote, bankroll)
     pari_id = sauvegarder_pari(chat_id, texte, sport, pari, confiance, mise, cote)
@@ -1203,7 +1356,7 @@ def envoyer_analyse(chat_id, texte, sport):
         f"────────────────\n"
         f"Pari      : {_safe(pari)}\n"
         f"Confiance : {confiance}% {pastille} ({niveau})\n"
-        f"Cote      : {cote}\n"
+        f"Cote      : {cote} ({cote_source})\n"
         f"Mise      : {mise:.2f}\n"
         f"Bankroll  : {bankroll:.2f}\n"
         f"Gain pot. : +{gain_potentiel:.2f}"
