@@ -29,6 +29,14 @@ MONGODB_URL = os.environ.get("MONGODB_URL")
 CAPITAL_INITIAL = 50.0
 SAISON_FOOT = os.environ.get("SAISON_FOOT", "2025")
 
+# Chat ou seront envoyes les pronostics automatiques (ton chat prive).
+# Peut etre surcharge par une variable d'environnement Render.
+MON_CHAT_ID = os.environ.get("MON_CHAT_ID", "8233541336")
+# Combien de minutes avant le coup d'envoi on envoie l'analyse.
+MINUTES_AVANT = int(os.environ.get("MINUTES_AVANT", "30"))
+# Marge : on envoie si le match est entre MINUTES_AVANT et MINUTES_AVANT+10 min.
+FENETRE_MINUTES = 10
+
 # --- Validation des variables d'environnement au demarrage -----------------
 REQUIS = {
     "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
@@ -49,6 +57,7 @@ mongo_client = MongoClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
 db = mongo_client["pronostics"]
 collection_paris = db["paris"]
 collection_bankroll = db["bankroll"]
+collection_envois = db["envois_auto"]
 
 
 def verifier_mongo():
@@ -427,7 +436,12 @@ def cmd_matchs(message):
 def traiter_message(message):
     texte = message.text or ""
     sport = detecter_sport(texte)
-    attente = bot.reply_to(message, "Analyse en cours...")
+    bot.reply_to(message, "Analyse en cours...")
+    envoyer_analyse(message.chat.id, texte, sport)
+
+
+def envoyer_analyse(chat_id, texte, sport):
+    """Analyse un match et envoie le resultat decoupe au chat indique."""
     analyse = analyser_match(texte, sport)
     pari, confiance, cote = parser_analyse(analyse)
     bankroll = get_bankroll()
@@ -443,7 +457,86 @@ def traiter_message(message):
 
     # Telegram limite a 4096 caracteres : on decoupe si besoin
     for i in range(0, len(reponse), 4000):
-        bot.send_message(message.chat.id, reponse[i:i + 4000])
+        bot.send_message(chat_id, reponse[i:i + 4000])
+
+
+# ---------------------------------------------------------------------------
+# Planificateur : pronostics automatiques 30 min avant chaque match
+# ---------------------------------------------------------------------------
+def deja_envoye(cle):
+    """Verifie si un pronostic a deja ete envoye pour ce match aujourd'hui."""
+    try:
+        return collection_envois.find_one({"_id": cle}) is not None
+    except PyMongoError as e:
+        log.error("deja_envoye : %s", e)
+        return False
+
+
+def marquer_envoye(cle):
+    try:
+        collection_envois.update_one(
+            {"_id": cle},
+            {"$set": {"envoye_le": datetime.now().isoformat()}},
+            upsert=True,
+        )
+    except PyMongoError as e:
+        log.error("marquer_envoye : %s", e)
+
+
+def minutes_avant_match(heure_str):
+    """Retourne le nombre de minutes entre maintenant et l'heure du match.
+
+    heure_str est au format 'HH:MM' (UTC, tel que renvoye par l'API).
+    """
+    try:
+        maintenant = datetime.utcnow()
+        h, m = heure_str.split(":")
+        debut = maintenant.replace(hour=int(h), minute=int(m),
+                                   second=0, microsecond=0)
+        delta = (debut - maintenant).total_seconds() / 60.0
+        return delta
+    except (ValueError, AttributeError):
+        return None
+
+
+def verifier_et_envoyer():
+    """Parcourt les matchs du jour et envoie ceux qui demarrent bientot."""
+    aujourd_hui = datetime.utcnow().strftime("%Y-%m-%d")
+
+    foot = [{**m, "sport": "foot"} for m in get_matchs_foot()]
+    tennis = [{**m, "sport": "tennis"} for m in get_matchs_tennis()]
+
+    for m in foot + tennis:
+        minutes = minutes_avant_match(m["heure"])
+        if minutes is None:
+            continue
+        # On envoie si le match commence dans MINUTES_AVANT a MINUTES_AVANT+FENETRE.
+        if MINUTES_AVANT <= minutes < MINUTES_AVANT + FENETRE_MINUTES:
+            cle = f'{aujourd_hui}_{m["sport"]}_{m["match"]}'
+            if deja_envoye(cle):
+                continue
+            try:
+                bot.send_message(
+                    MON_CHAT_ID,
+                    f'⏰ Match dans ~{int(minutes)} min\n{m["match"]} '
+                    f'({m["heure"]} UTC)\nAnalyse en cours...',
+                )
+                envoyer_analyse(MON_CHAT_ID, m["match"], m["sport"])
+                marquer_envoye(cle)
+                log.info("Pronostic auto envoye : %s", m["match"])
+            except Exception as e:
+                log.error("Echec envoi auto pour %s : %s", m["match"], e)
+
+
+def lancer_planificateur():
+    """Boucle infinie : verifie les matchs toutes les 5 minutes."""
+    log.info("Planificateur de pronostics automatiques demarre")
+    while True:
+        try:
+            verifier_et_envoyer()
+        except Exception as e:
+            log.error("Erreur planificateur : %s", e)
+        time.sleep(300)  # 5 minutes
 
 
 # ---------------------------------------------------------------------------
@@ -478,4 +571,5 @@ def lancer_bot():
 if __name__ == "__main__":
     verifier_mongo()
     threading.Thread(target=lancer_serveur, daemon=True).start()
+    threading.Thread(target=lancer_planificateur, daemon=True).start()
     lancer_bot()
