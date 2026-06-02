@@ -529,6 +529,7 @@ def stats_reelles_foot(nom_match):
         nom_dom = fixture["teams"]["home"]["name"]
         nom_ext = fixture["teams"]["away"]["name"]
         id_ligue = fixture["league"]["id"]
+        id_fixture = fixture["fixture"]["id"]
 
         lignes = ["=== DONNEES REELLES API (fiables) ==="]
 
@@ -590,6 +591,56 @@ def stats_reelles_foot(nom_match):
                         f'{equipe["points"]} pts, forme {equipe.get("form", "?")}'
                     )
         except (KeyError, IndexError, TypeError):
+            pass
+
+        # 5. Blessures et absences confirmees pour ce match.
+        try:
+            ri = requests.get(
+                f"{base}/injuries", headers=head,
+                params={"fixture": id_fixture}, timeout=10,
+            )
+            blesses = {nom_dom: [], nom_ext: []}
+            for inj in ri.json().get("response", []):
+                try:
+                    equipe = inj["team"]["name"]
+                    joueur = inj["player"]["name"]
+                    raison = inj["player"].get("reason", "indisponible")
+                    if equipe in blesses:
+                        blesses[equipe].append(f"{joueur} ({raison})")
+                except (KeyError, TypeError):
+                    continue
+            for equipe, liste in blesses.items():
+                if liste:
+                    lignes.append(f"Absents/blesses {equipe} : " + ", ".join(liste))
+                else:
+                    lignes.append(f"Absents/blesses {equipe} : aucun confirme par l'API")
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+
+        # 6. Compositions probables / officielles (dispo ~1h avant le match).
+        try:
+            rl = requests.get(
+                f"{base}/fixtures/lineups", headers=head,
+                params={"fixture": id_fixture}, timeout=10,
+            )
+            data_l = rl.json().get("response", [])
+            if data_l:
+                for equipe in data_l:
+                    try:
+                        nom_eq = equipe["team"]["name"]
+                        formation = equipe.get("formation", "?")
+                        titulaires = ", ".join(
+                            j["player"]["name"] for j in equipe.get("startXI", [])
+                        )
+                        lignes.append(
+                            f"Compo {nom_eq} ({formation}) : {titulaires}"
+                            if titulaires else f"Compo {nom_eq} : non disponible")
+                    except (KeyError, TypeError):
+                        continue
+            else:
+                lignes.append("Compositions : pas encore publiees "
+                              "(elles sortent ~1h avant le coup d'envoi)")
+        except (requests.RequestException, ValueError, KeyError):
             pass
 
         return "\n".join(lignes) + "\n"
@@ -660,11 +711,12 @@ RAPPEL : si les donnees sont minces, baisse la confiance et reste prudent.
 Ne gonfle jamais la confiance pour faire plaisir."""
     else:
         donnees_api = stats_reelles_foot(match)
-        infos = recherche_web(f"{match} stats forme composition equipe 2026")
-        infos += recherche_web(f"{match} blessures absents suspendus 2026")
+        infos = recherche_web(f"{match} compo probable composition equipe 2026")
+        infos += recherche_web(f"{match} blessures absents suspendus derniere minute 2026")
         infos += recherche_web(f"{match} cotes bookmakers pronostic 2026")
-        infos += recherche_web(f"{match} historique confrontations head to head")
-        infos += recherche_web(f"{match} classement 2026")
+        infos += recherche_web(f"{match} actualite news avant match 2026")
+        infos += recherche_web(f"{match} enjeu motivation contexte classement 2026")
+        infos += recherche_web(f"{match} declaration entraineur conference presse 2026")
         infos += recherche_web(f"{match} buteurs forme recente 2026")
         prompt = f"""Tu es un analyste FOOTBALL rigoureux et HONNETE.
 
