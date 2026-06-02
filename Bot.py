@@ -59,6 +59,7 @@ collection_paris = db["paris"]
 collection_bankroll = db["bankroll"]
 collection_envois = db["envois_auto"]
 collection_abonnes = db["abonnes"]
+collection_historique = db["historique_bankroll"]
 
 
 def verifier_mongo():
@@ -279,13 +280,69 @@ def rapport_efficacite(user_id):
         else:
             lignes.append(f"  {sport.capitalize()} : aucun pari regle")
 
+    # Comparaison BOT vs HASARD : le bot fait-il mieux que le pur hasard ?
+    # Foot 1N2 : hasard = 1 chance sur 3. Tennis (2 issues) : 1 sur 2.
+    total = len(regles)
+    gagnes_bot = len([p for p in regles if p["resultat"] == "gagne"])
+    reussite_bot = round(gagnes_bot / total * 100, 1)
+    esperance_hasard = 0.0
+    for p in regles:
+        esperance_hasard += 0.5 if p.get("sport") == "tennis" else (1 / 3)
+    reussite_hasard = round(esperance_hasard / total * 100, 1)
+    ecart = round(reussite_bot - reussite_hasard, 1)
+    verdict = ("le bot fait MIEUX que le hasard 👍" if ecart > 3 else
+               "le bot fait MOINS BIEN que le hasard 👎" if ecart < -3 else
+               "le bot fait comme le hasard (pas d'avantage clair)")
+    lignes.append(
+        "\n🎲 BOT vs HASARD :\n"
+        f"  Reussite du bot    : {reussite_bot}%\n"
+        f"  Attendu au hasard  : {reussite_hasard}%\n"
+        f"  Ecart              : {ecart:+.1f} points\n"
+        f"  Verdict : {verdict}"
+    )
+
     # Lecture : la confiance est-elle bien calibree ?
     lignes.append(
         "\n💡 Lecture : si la reussite reelle est proche du % de confiance "
-        "annonce, le bot est bien calibre. Si elle est tres en dessous, "
-        "il est trop optimiste (prudence)."
+        "annonce, le bot est bien calibre. S'il ne fait pas mieux que le "
+        "hasard, ses analyses n'apportent pas de vrai avantage."
     )
     return "\n".join(lignes)
+
+
+def courbe_bankroll(user_id):
+    """Mini-graphique ASCII de l'evolution de la bankroll dans le temps."""
+    try:
+        points = list(collection_historique.find(
+            {"user_id": str(user_id)}).sort("date", 1))
+    except PyMongoError as e:
+        log.error("courbe_bankroll : %s", e)
+        return "Erreur de connexion a la base de donnees."
+    valeurs = [CAPITAL_INITIAL] + [p["bankroll"] for p in points]
+    if len(valeurs) < 2:
+        return ("Pas encore assez de donnees pour tracer la courbe. "
+                "Elle se construit a chaque pari regle.")
+
+    # On garde au maximum les 20 derniers points pour rester lisible.
+    valeurs = valeurs[-20:]
+    mini, maxi = min(valeurs), max(valeurs)
+    etendue = maxi - mini if maxi > mini else 1
+    niveaux = "▁▂▃▄▅▆▇█"
+    graphe = "".join(
+        niveaux[min(int((v - mini) / etendue * (len(niveaux) - 1)), len(niveaux) - 1)]
+        for v in valeurs
+    )
+    depart = valeurs[0]
+    actuel = valeurs[-1]
+    evo = round((actuel - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100, 1)
+    fleche = "📈" if actuel >= CAPITAL_INITIAL else "📉"
+    return (
+        "📊 COURBE DE LA BANKROLL\n"
+        f"```\n{graphe}\n```\n"
+        f"Min {mini:.2f}  |  Max {maxi:.2f}\n"
+        f"Depart {CAPITAL_INITIAL:.2f} → Actuel {actuel:.2f}\n"
+        f"{fleche} Evolution : {evo:+.1f}%"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +391,15 @@ def regler_pari(pari, gagne):
         )
         nouvelle_bankroll = round(get_bankroll(user_id) + gain, 2)
         update_bankroll(user_id, nouvelle_bankroll)
+        # Point d'historique pour tracer la courbe d'evolution.
+        try:
+            collection_historique.insert_one({
+                "user_id": str(user_id),
+                "date": datetime.now().isoformat(),
+                "bankroll": nouvelle_bankroll,
+            })
+        except PyMongoError:
+            pass
         log.info("Pari regle : %s -> %s (%.2f)", pari["match"], resultat, gain)
         return gain, nouvelle_bankroll
     except PyMongoError as e:
@@ -1069,6 +1135,7 @@ def cmd_start(message):
         "/stats - statistiques\n"
         "/bankroll - capital actuel\n"
         "/efficacite - fiabilite du bot (taux reel par confiance)\n"
+        "/courbe - evolution de la bankroll\n"
         "/historique - derniers paris\n"
         "/enattente - paris a regler\n"
         "/gagne <numero> - marquer un pari gagne\n"
@@ -1134,6 +1201,17 @@ def cmd_reset(message):
 @bot.message_handler(commands=["efficacite"])
 def cmd_efficacite(message):
     bot.reply_to(message, rapport_efficacite(message.chat.id))
+
+
+@bot.message_handler(commands=["courbe"])
+def cmd_courbe(message):
+    try:
+        bot.send_message(message.chat.id, courbe_bankroll(message.chat.id),
+                         parse_mode="Markdown")
+    except Exception as e:
+        log.error("cmd_courbe : %s", e)
+        bot.send_message(message.chat.id,
+                         courbe_bankroll(message.chat.id).replace("```", ""))
 
 
 @bot.message_handler(commands=["historique"])
@@ -1490,6 +1568,27 @@ def verifier_et_envoyer():
                     log.error("Echec envoi auto (%s) %s : %s", abonne, m["match"], e)
 
 
+def envoyer_bilan_hebdo():
+    """Le dimanche soir (~20h UTC), envoie a chaque abonne un bilan de sa
+    semaine. Utilise la collection envois pour ne l'envoyer qu'une fois."""
+    maintenant = datetime.utcnow()
+    # Dimanche = weekday() 6, fenetre 20h00-20h05 UTC.
+    if maintenant.weekday() != 6 or maintenant.hour != 20 or maintenant.minute >= 5:
+        return
+    cle_semaine = f"bilan_{maintenant.strftime('%Y_%U')}"
+    for abonne in liste_abonnes():
+        cle = f"{cle_semaine}_{abonne}"
+        if deja_envoye(cle):
+            continue
+        try:
+            txt = "🗓️ BILAN DE LA SEMAINE\n\n" + tableau_bord_bankroll(abonne)
+            bot.send_message(abonne, txt)
+            bot.send_message(abonne, rapport_efficacite(abonne))
+            marquer_envoye(cle)
+        except Exception as e:
+            log.error("bilan hebdo (%s) : %s", abonne, e)
+
+
 def lancer_planificateur():
     """Boucle infinie : verifie les matchs toutes les 5 minutes."""
     log.info("Planificateur de pronostics automatiques demarre")
@@ -1497,6 +1596,7 @@ def lancer_planificateur():
         try:
             verifier_et_envoyer()
             verifier_resultats_auto()
+            envoyer_bilan_hebdo()
         except Exception as e:
             log.error("Erreur planificateur : %s", e)
         time.sleep(300)  # 5 minutes
