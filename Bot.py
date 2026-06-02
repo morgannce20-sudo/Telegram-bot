@@ -1131,14 +1131,18 @@ def traiter_message(message):
     envoyer_analyse(message.chat.id, texte, sport)
 
 
-def barre_confiance(confiance):
-    """Petite barre visuelle de confiance, ex: 80% -> ████████░░"""
+def pastille_confiance(confiance):
+    """Pastille couleur selon le niveau de confiance.
+    🟢 elevee (>=70), 🟡 moyenne (55-69), 🔴 faible (<55)."""
     try:
-        n = int(round(confiance / 10))
+        c = float(confiance)
     except (TypeError, ValueError):
-        n = 0
-    n = max(0, min(n, 10))
-    return "█" * n + "░" * (10 - n)
+        c = 0
+    if c >= 70:
+        return "🟢", "elevee"
+    if c >= 55:
+        return "🟡", "moyenne"
+    return "🔴", "faible"
 
 
 def envoyer_analyse(chat_id, texte, sport):
@@ -1152,29 +1156,33 @@ def envoyer_analyse(chat_id, texte, sport):
 
     icone_sport = "🎾" if sport == "tennis" else "⚽"
     gain_potentiel = round(mise * (cote - 1), 2) if cote else 0
+    pastille, niveau = pastille_confiance(confiance)
 
-    # Bandeau resume tout en haut : l'essentiel d'un coup d'oeil.
-    resume = (
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"{icone_sport}  PRONOSTIC\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"🎯 Pari      : {pari}\n"
-        f"📊 Confiance : {confiance}%  {barre_confiance(confiance)}\n"
-        f"💲 Cote      : {cote}\n"
-        f"💰 Mise      : {mise:.2f}  (bankroll {bankroll:.2f})\n"
-        f"🤑 Gain pot. : +{gain_potentiel:.2f}\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        "📋 ANALYSE DETAILLEE\n"
+    # Resume dans un bloc de code monospace : Telegram l'encadre proprement
+    # et l'aligne parfaitement (comme les alertes trading). On retire les
+    # accents graves eventuels du contenu pour ne pas casser le bloc.
+    def _safe(v):
+        return str(v).replace("`", "'")
+
+    resume_brut = (
+        f"{icone_sport} PRONOSTIC\n"
+        f"────────────────\n"
+        f"Pari      : {_safe(pari)}\n"
+        f"Confiance : {confiance}% {pastille} ({niveau})\n"
+        f"Cote      : {cote}\n"
+        f"Mise      : {mise:.2f}\n"
+        f"Bankroll  : {bankroll:.2f}\n"
+        f"Gain pot. : +{gain_potentiel:.2f}"
     )
+    resume = f"```\n{resume_brut}\n```\n\n📋 *ANALYSE DETAILLEE*\n"
 
     footer = (
-        "\n━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ Analyse generee par IA, a titre indicatif.\n"
-        "Certaines donnees peuvent etre incertaines.\n"
-        "Ne parie que ce que tu peux te permettre de perdre."
+        "\n\n⚠️ _Analyse generee par IA, a titre indicatif._\n"
+        "_Ne parie que ce que tu peux te permettre de perdre._"
     )
 
-    reponse = resume + analyse.strip() + footer
+    # L'analyse IA reste en texte normal (caracteres speciaux non maitrises).
+    corps = analyse.strip() + footer
 
     # Boutons de suivi attaches au dernier morceau du message.
     clavier = telebot.types.InlineKeyboardMarkup()
@@ -1191,8 +1199,17 @@ def envoyer_analyse(chat_id, texte, sport):
             telebot.types.InlineKeyboardButton("💰 Voir bankroll", callback_data="bk:0"),
         )
 
-    # Telegram limite a 4096 caracteres : on decoupe si besoin.
-    morceaux = [reponse[i:i + 4000] for i in range(0, len(reponse), 4000)]
+    # 1) Le resume encadre, en Markdown (sous notre controle, donc sans risque).
+    try:
+        bot.send_message(chat_id, resume, parse_mode="Markdown")
+    except Exception as e:
+        # Si jamais le Markdown echoue, on renvoie en texte brut.
+        log.error("envoi resume markdown : %s", e)
+        bot.send_message(chat_id, resume.replace("```", "").replace("*", "").replace("_", ""))
+
+    # 2) Le corps de l'analyse en texte brut, decoupe si > 4000 caracteres.
+    #    Les boutons sont attaches au tout dernier morceau.
+    morceaux = [corps[i:i + 4000] for i in range(0, len(corps), 4000)] or [""]
     for idx, morceau in enumerate(morceaux):
         dernier = (idx == len(morceaux) - 1)
         bot.send_message(
