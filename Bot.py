@@ -676,6 +676,7 @@ REGLES ABSOLUES :
 1. Si tu n'as PAS une information, ecris "Donnee non disponible".
 2. N'INVENTE JAMAIS un score, un classement, une blessure ou une stat.
 3. Mieux vaut admettre "non disponible" que donner une fausse information.
+4. MISE EN PAGE : saute une ligne vide entre chaque section pour aerer.
 
 Infos collectees sur le web (a recouper, pas toujours fiables) :
 {infos}
@@ -739,6 +740,7 @@ REGLES ABSOLUES :
    N'INVENTE JAMAIS un chiffre, un score, une blessure ou une stat.
 3. Mieux vaut admettre "non disponible" que donner une fausse information.
 4. Utilise uniquement les joueurs actuellement dans ces clubs.
+5. MISE EN PAGE : saute une ligne vide entre chaque section pour aerer.
 
 {donnees_api}
 Infos web complementaires (moins fiables, a recouper) :
@@ -1129,6 +1131,16 @@ def traiter_message(message):
     envoyer_analyse(message.chat.id, texte, sport)
 
 
+def barre_confiance(confiance):
+    """Petite barre visuelle de confiance, ex: 80% -> ████████░░"""
+    try:
+        n = int(round(confiance / 10))
+    except (TypeError, ValueError):
+        n = 0
+    n = max(0, min(n, 10))
+    return "█" * n + "░" * (10 - n)
+
+
 def envoyer_analyse(chat_id, texte, sport):
     """Analyse un match et envoie le resultat au chat. La bankroll, la mise
     et le pari sont propres a l'utilisateur (chat_id)."""
@@ -1138,12 +1150,31 @@ def envoyer_analyse(chat_id, texte, sport):
     mise = calculer_mise(chat_id, confiance, cote, bankroll)
     pari_id = sauvegarder_pari(chat_id, texte, sport, pari, confiance, mise, cote)
 
-    reponse = (
-        f"{analyse}\n\n"
-        f"💰 Mise conseillee : {mise:.2f} (bankroll : {bankroll:.2f})\n\n"
-        "⚠️ Analyse generee par IA a titre indicatif. Certaines donnees "
-        "peuvent etre incertaines ou non a jour. Verifie toujours avant de parier."
+    icone_sport = "🎾" if sport == "tennis" else "⚽"
+    gain_potentiel = round(mise * (cote - 1), 2) if cote else 0
+
+    # Bandeau resume tout en haut : l'essentiel d'un coup d'oeil.
+    resume = (
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"{icone_sport}  PRONOSTIC\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 Pari      : {pari}\n"
+        f"📊 Confiance : {confiance}%  {barre_confiance(confiance)}\n"
+        f"💲 Cote      : {cote}\n"
+        f"💰 Mise      : {mise:.2f}  (bankroll {bankroll:.2f})\n"
+        f"🤑 Gain pot. : +{gain_potentiel:.2f}\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "📋 ANALYSE DETAILLEE\n"
     )
+
+    footer = (
+        "\n━━━━━━━━━━━━━━━━━━\n"
+        "⚠️ Analyse generee par IA, a titre indicatif.\n"
+        "Certaines donnees peuvent etre incertaines.\n"
+        "Ne parie que ce que tu peux te permettre de perdre."
+    )
+
+    reponse = resume + analyse.strip() + footer
 
     # Boutons de suivi attaches au dernier morceau du message.
     clavier = telebot.types.InlineKeyboardMarkup()
