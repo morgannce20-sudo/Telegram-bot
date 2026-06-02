@@ -96,18 +96,23 @@ def update_bankroll(nouveau_capital):
 
 
 def calculer_mise(confiance, cote, bankroll):
-    """Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%."""
+    """Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%,
+    puis ajuste par le coefficient d'apprentissage (taux de reussite passe)."""
     p = confiance / 100.0
     b = max(cote - 1, 0.01)
     kelly = (b * p - (1 - p)) / b
     kelly = max(0.02, min(kelly, 0.10))
-    return round(bankroll * kelly, 2)
+    mise = bankroll * kelly * coefficient_apprentissage()
+    return round(mise, 2)
 
 
 def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
     try:
+        pari_id = datetime.now().strftime("%Y%m%d%H%M%S")
         collection_paris.insert_one({
+            "_id": pari_id,
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "date_jour": datetime.now().strftime("%Y-%m-%d"),
             "match": match,
             "sport": sport,
             "pari": pari,
@@ -117,8 +122,10 @@ def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
             "resultat": "en attente",
             "gain": 0,
         })
+        return pari_id
     except PyMongoError as e:
         log.error("sauvegarder_pari : %s", e)
+        return None
 
 
 def get_statistiques():
@@ -142,6 +149,129 @@ def get_statistiques():
         f"Gain/Perte total : {gain_total:.2f}\n"
         f"Bankroll actuelle : {get_bankroll():.2f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Reglement des paris, apprentissage & verification automatique
+# ---------------------------------------------------------------------------
+def coefficient_apprentissage():
+    """Ajuste les mises selon le taux de reussite reel passe.
+
+    - taux >= 60% : on mise un peu plus (coef 1.2)
+    - taux 45-60% : mise normale (coef 1.0)
+    - taux < 45%  : on mise moins pour proteger la bankroll (coef 0.6)
+    Tant qu'il y a moins de 10 paris regles, on reste neutre (coef 1.0).
+    """
+    try:
+        regles = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
+    except PyMongoError as e:
+        log.error("coefficient_apprentissage : %s", e)
+        return 1.0
+    if len(regles) < 10:
+        return 1.0
+    gagnes = len([p for p in regles if p["resultat"] == "gagne"])
+    taux = gagnes / len(regles)
+    if taux >= 0.60:
+        return 1.2
+    if taux >= 0.45:
+        return 1.0
+    return 0.6
+
+
+def regler_pari(pari, gagne):
+    """Met a jour un pari (gagne/perdu), recalcule la bankroll et le gain."""
+    mise = pari.get("mise", 0)
+    cote = pari.get("cote", 1)
+    if gagne:
+        gain = round(mise * (cote - 1), 2)   # benefice net
+        resultat = "gagne"
+    else:
+        gain = round(-mise, 2)               # on perd la mise
+        resultat = "perdu"
+    try:
+        collection_paris.update_one(
+            {"_id": pari["_id"]},
+            {"$set": {"resultat": resultat, "gain": gain}},
+        )
+        nouvelle_bankroll = round(get_bankroll() + gain, 2)
+        update_bankroll(nouvelle_bankroll)
+        log.info("Pari regle : %s -> %s (%.2f)", pari["match"], resultat, gain)
+        return gain, nouvelle_bankroll
+    except PyMongoError as e:
+        log.error("regler_pari : %s", e)
+        return 0, get_bankroll()
+
+
+def score_match_foot(nom_match):
+    """Cherche le score final d'un match de foot du jour via l'API.
+
+    Renvoie (buts_domicile, buts_exterieur) ou None si introuvable / non termine.
+    """
+    if not FOOTBALL_API_KEY:
+        return None
+    try:
+        r = requests.get(
+            "https://v3.football.api-sports.io/fixtures",
+            headers={"x-apisports-key": FOOTBALL_API_KEY},
+            params={"date": datetime.now().strftime("%Y-%m-%d"),
+                    "league": "39,140,135,78,61,2,3", "season": SAISON_FOOT},
+            timeout=10,
+        )
+        for m in r.json().get("response", []):
+            dom = m["teams"]["home"]["name"]
+            ext = m["teams"]["away"]["name"]
+            statut = m["fixture"]["status"]["short"]
+            # FT = Full Time (match termine)
+            if statut == "FT" and (dom.lower() in nom_match.lower()
+                                   or ext.lower() in nom_match.lower()):
+                return (m["goals"]["home"], m["goals"]["away"], dom, ext)
+        return None
+    except (requests.RequestException, ValueError, KeyError) as e:
+        log.error("score_match_foot : %s", e)
+        return None
+
+
+def verifier_resultats_auto():
+    """Verifie les paris foot 1N2 en attente et les regle si le match est fini."""
+    try:
+        en_attente = list(collection_paris.find({
+            "resultat": "en attente", "sport": "foot",
+        }))
+    except PyMongoError as e:
+        log.error("verifier_resultats_auto : %s", e)
+        return
+
+    for p in en_attente:
+        infos = score_match_foot(p["match"])
+        if not infos:
+            continue
+        buts_dom, buts_ext, dom, ext = infos
+        pari_txt = (p.get("pari") or "").lower()
+
+        # On ne gere automatiquement que les paris simples 1N2.
+        gagne = None
+        if "domicile" in pari_txt or dom.lower() in pari_txt or "victoire 1" in pari_txt:
+            gagne = buts_dom > buts_ext
+        elif "exterieur" in pari_txt or ext.lower() in pari_txt or "victoire 2" in pari_txt:
+            gagne = buts_ext > buts_dom
+        elif "nul" in pari_txt or "match nul" in pari_txt:
+            gagne = buts_dom == buts_ext
+
+        if gagne is None:
+            # Pari trop complexe pour l'auto : on laisse pour reglement manuel.
+            continue
+
+        gain, bankroll = regler_pari(p, gagne)
+        try:
+            statut = "GAGNE ✅" if gagne else "PERDU ❌"
+            bot.send_message(
+                MON_CHAT_ID,
+                f"Resultat automatique\n{p['match']} : {buts_dom}-{buts_ext}\n"
+                f"Pari : {p['pari']}\n{statut} | Gain : {gain:+.2f}\n"
+                f"Nouvelle bankroll : {bankroll:.2f}",
+            )
+        except Exception as e:
+            log.error("Notif resultat auto : %s", e)
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +537,11 @@ def cmd_start(message):
         "Envoie un match a analyser, ou utilise :\n"
         "/matchs - matchs du jour\n"
         "/stats - statistiques\n"
-        "/bankroll - capital actuel",
+        "/bankroll - capital actuel\n"
+        "/historique - derniers paris\n"
+        "/enattente - paris a regler\n"
+        "/gagne <numero> - marquer un pari gagne\n"
+        "/perdu <numero> - marquer un pari perdu",
     )
 
 
@@ -419,6 +553,80 @@ def cmd_stats(message):
 @bot.message_handler(commands=["bankroll"])
 def cmd_bankroll(message):
     bot.reply_to(message, f"Bankroll actuelle : {get_bankroll():.2f}")
+
+
+@bot.message_handler(commands=["historique"])
+def cmd_historique(message):
+    try:
+        paris = list(collection_paris.find().sort("_id", -1).limit(10))
+    except PyMongoError:
+        bot.reply_to(message, "Erreur base de donnees.")
+        return
+    if not paris:
+        bot.reply_to(message, "Aucun pari enregistre.")
+        return
+    lignes = ["DERNIERS PARIS :\n"]
+    for p in paris:
+        icone = {"gagne": "✅", "perdu": "❌"}.get(p["resultat"], "⏳")
+        lignes.append(
+            f'{icone} {p["match"]}\n'
+            f'   {p.get("pari", "?")} | cote {p.get("cote", "?")} | '
+            f'mise {p.get("mise", 0):.2f} | gain {p.get("gain", 0):+.2f}'
+        )
+    bot.reply_to(message, "\n".join(lignes))
+
+
+@bot.message_handler(commands=["enattente"])
+def cmd_enattente(message):
+    """Liste les paris non regles avec leur numero, pour /gagne et /perdu."""
+    try:
+        paris = list(collection_paris.find({"resultat": "en attente"}).sort("_id", -1))
+    except PyMongoError:
+        bot.reply_to(message, "Erreur base de donnees.")
+        return
+    if not paris:
+        bot.reply_to(message, "Aucun pari en attente.")
+        return
+    lignes = ["PARIS EN ATTENTE :\n",
+              "Pour regler : /gagne <numero> ou /perdu <numero>\n"]
+    for i, p in enumerate(paris, start=1):
+        lignes.append(f'{i}. {p["match"]} - {p.get("pari", "?")} (cote {p.get("cote", "?")})')
+    bot.reply_to(message, "\n".join(lignes))
+
+
+def _regler_par_numero(message, gagne):
+    """Logique commune a /gagne et /perdu : retrouve le pari par son numero."""
+    parts = (message.text or "").split()
+    if len(parts) < 2 or not parts[1].isdigit():
+        bot.reply_to(message, "Usage : /gagne <numero>\nVois les numeros avec /enattente")
+        return
+    numero = int(parts[1])
+    try:
+        paris = list(collection_paris.find({"resultat": "en attente"}).sort("_id", -1))
+    except PyMongoError:
+        bot.reply_to(message, "Erreur base de donnees.")
+        return
+    if numero < 1 or numero > len(paris):
+        bot.reply_to(message, f"Numero invalide. Il y a {len(paris)} pari(s) en attente.")
+        return
+    pari = paris[numero - 1]
+    gain, bankroll = regler_pari(pari, gagne)
+    statut = "GAGNE ✅" if gagne else "PERDU ❌"
+    bot.reply_to(
+        message,
+        f"{pari['match']}\n{statut} | Gain : {gain:+.2f}\n"
+        f"Nouvelle bankroll : {bankroll:.2f}",
+    )
+
+
+@bot.message_handler(commands=["gagne"])
+def cmd_gagne(message):
+    _regler_par_numero(message, gagne=True)
+
+
+@bot.message_handler(commands=["perdu"])
+def cmd_perdu(message):
+    _regler_par_numero(message, gagne=False)
 
 
 @bot.message_handler(commands=["matchs"])
@@ -534,6 +742,7 @@ def lancer_planificateur():
     while True:
         try:
             verifier_et_envoyer()
+            verifier_resultats_auto()
         except Exception as e:
             log.error("Erreur planificateur : %s", e)
         time.sleep(300)  # 5 minutes
