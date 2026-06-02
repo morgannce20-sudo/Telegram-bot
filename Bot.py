@@ -1368,6 +1368,31 @@ def clic_bankroll(call):
         log.error("clic_bankroll : %s", e)
 
 
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("ef:"))
+def clic_efficacite(call):
+    """Affiche le rapport d'efficacite quand on clique le bouton."""
+    bot.answer_callback_query(call.id, "Efficacite")
+    try:
+        bot.send_message(call.message.chat.id,
+                         rapport_efficacite(call.message.chat.id))
+    except Exception as e:
+        log.error("clic_efficacite : %s", e)
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("cb:"))
+def clic_courbe(call):
+    """Affiche la courbe de bankroll quand on clique le bouton."""
+    bot.answer_callback_query(call.id, "Courbe")
+    try:
+        bot.send_message(call.message.chat.id,
+                         courbe_bankroll(call.message.chat.id),
+                         parse_mode="Markdown")
+    except Exception as e:
+        log.error("clic_courbe : %s", e)
+        bot.send_message(call.message.chat.id,
+                         courbe_bankroll(call.message.chat.id).replace("```", ""))
+
+
 @bot.message_handler(commands=["matchs"])
 def cmd_matchs(message):
     foot = get_matchs_foot()
@@ -1461,7 +1486,9 @@ def envoyer_analyse(chat_id, texte, sport):
             telebot.types.InlineKeyboardButton("🔄 Mise a jour live", callback_data=f"l:{pari_id}"),
         )
         clavier.add(
-            telebot.types.InlineKeyboardButton("💰 Voir bankroll", callback_data="bk:0"),
+            telebot.types.InlineKeyboardButton("💰 Bankroll", callback_data="bk:0"),
+            telebot.types.InlineKeyboardButton("🎯 Efficacite", callback_data="ef:0"),
+            telebot.types.InlineKeyboardButton("📊 Courbe", callback_data="cb:0"),
         )
 
     # 1) Le resume encadre, en Markdown (sous notre controle, donc sans risque).
