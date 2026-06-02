@@ -176,77 +176,127 @@ def detecter_sport(texte):
 
 
 def analyser_match(match, sport):
-    infos = recherche_web(f"{match} pronostic statistiques {sport}")
     if sport == "tennis":
-        prompt = (
-            f"Tu es un analyste tennis expert. Analyse ce match : {match}\n"
-            f"Informations recentes trouvees : {infos}\n\n"
-            "Produis une analyse detaillee et structuree EXACTEMENT dans ce format, "
-            "avec les emojis, en francais :\n\n"
-            "🎾 MATCH : [Joueur 1] vs [Joueur 2]\n"
-            "🏆 Tournoi : [nom] | Surface : [dur/terre/gazon]\n\n"
-            "📊 FORME RECENTE (5 derniers matchs) :\n"
-            "→ [Joueur 1] : [bilan] | Derniers resultats : [scores]\n"
-            "→ [Joueur 2] : [bilan] | Derniers resultats : [scores]\n\n"
-            "🎯 SURFACE :\n"
-            "→ Stats des deux joueurs sur cette surface\n\n"
-            "🤕 BLESSURES & FORME PHYSIQUE :\n"
-            "→ Etat physique de chaque joueur\n\n"
-            "🔄 HEAD TO HEAD :\n"
-            "→ Historique des confrontations + dernier match\n\n"
-            "📈 PROBABILITES :\n"
-            "→ [Joueur 1] : [%]\n"
-            "→ [Joueur 2] : [%]\n\n"
-            "💡 ANALYSE TACTIQUE :\n"
-            "→ Style de jeu et points cles\n\n"
-            "Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :\n"
-            "PARI: [ton pronostic]\n"
-            "CONFIANCE: [pourcentage entre 50 et 95]\n"
-            "COTE: [cote estimee, ex 1.85]\n\n"
-            "Sois precis et realiste. Si tu n'es pas sur d'une donnee, reste prudent."
-        )
+        infos = recherche_web(f"{match} tennis stats forme recente 2026")
+        infos += recherche_web(f"{match} head to head historique surface")
+        infos += recherche_web(f"{match} blessure actualite 2026")
+        infos += recherche_web(f"{match} classement ATP WTA 2026")
+        infos += recherche_web(f"{match} pronostic cote bookmaker 2026")
+        prompt = f"""Tu es un expert TENNIS. Analyse ce match avec des DONNEES REELLES.
+Ces personnes sont des JOUEURS DE TENNIS professionnels. Ne parle JAMAIS de football.
+
+Infos collectees sur le web :
+{infos}
+
+MATCH : {match}
+
+Fournis une analyse complete et structuree exactement comme ceci, en francais :
+
+🎾 MATCH : {match}
+🏆 Tournoi : [nom] | Surface : [surface]
+
+📊 FORME RECENTE (5 derniers matchs) :
+→ [Joueur1] : [W-L] | Derniers resultats avec scores exacts
+→ [Joueur2] : [W-L] | Derniers resultats avec scores exacts
+
+🎯 SURFACE :
+→ Stats sur cette surface cette saison pour chaque joueur (victoires/defaites)
+→ Avantage : [Joueur qui a l'avantage sur cette surface et pourquoi]
+
+🔄 HEAD TO HEAD :
+→ Historique global : [X-Y]
+→ Dernier match : [date + score]
+
+🤕 BLESSURES & FORME PHYSIQUE :
+→ [Joueur1] : [etat physique confirme ou RAS]
+→ [Joueur2] : [etat physique confirme ou RAS]
+
+📰 NEWS IMPORTANTES :
+→ [Infos recentes importantes pour ce match]
+
+📈 PROBABILITES :
+→ [Joueur1] : XX%
+→ [Joueur2] : XX%
+
+🎯 SCORE PREDIT : X-X sets
+
+💡 ANALYSE TACTIQUE :
+→ Style de jeu de chaque joueur et comment ils s'affrontent sur cette surface
+
+Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :
+PARI: [ton pronostic]
+CONFIANCE: [pourcentage entre 50 et 95]
+COTE: [cote estimee, ex 1.85]
+
+Utilise les donnees reelles trouvees. Si une info est incertaine, indique-le, mais remplis chaque section au mieux."""
     else:
-        prompt = (
-            f"Tu es un analyste football expert. Analyse ce match : {match}\n"
-            f"Informations recentes trouvees : {infos}\n\n"
-            "Produis une analyse detaillee et structuree EXACTEMENT dans ce format, "
-            "avec les emojis, en francais :\n\n"
-            "⚽ MATCH : [Equipe 1] - [Equipe 2]\n"
-            "🏆 Competition : [nom]\n\n"
-            "📊 FORME ACTUELLE (5 derniers matchs) :\n"
-            "→ [Equipe 1] : [V-N-D] | Buts marques : [x] | Buts encaisses : [x] | Serie : [...]\n"
-            "→ [Equipe 2] : [V-N-D] | Buts marques : [x] | Buts encaisses : [x] | Serie : [...]\n\n"
-            "🏠 DOMICILE / EXTERIEUR :\n"
-            "→ [Equipe 1] a domicile cette saison : [V-N-D]\n"
-            "→ [Equipe 2] a l'exterieur cette saison : [V-N-D]\n\n"
-            "👥 JOUEURS CLES :\n"
-            "→ [Equipe 1] : [joueur - stats]\n"
-            "→ [Equipe 2] : [joueur - stats]\n\n"
-            "🚑 BLESSURES & ABSENCES :\n"
-            "→ [Equipe 1] : [liste]\n"
-            "→ [Equipe 2] : [liste]\n\n"
-            "🔄 HEAD TO HEAD :\n"
-            "→ Historique global + dernier match\n\n"
-            "📈 PROBABILITES :\n"
-            "→ [Equipe 1] : [%]\n"
-            "→ Match nul : [%]\n"
-            "→ [Equipe 2] : [%]\n\n"
-            "🎯 SCORE PROBABLE : [x-x]\n\n"
-            "⚽ BUTEURS PROBABLES :\n"
-            "→ [Equipe 1] : [joueur (% - stats)]\n"
-            "→ [Equipe 2] : [joueur (% - stats)]\n\n"
-            "🔢 NOMBRE DE BUTS :\n"
-            "→ Plus de 2.5 : [%]\n"
-            "→ Moins de 2.5 : [%]\n"
-            "→ Les deux equipes marquent (BTTS) : [%]\n\n"
-            "💡 ANALYSE TACTIQUE :\n"
-            "→ Systemes de jeu et points cles\n\n"
-            "Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :\n"
-            "PARI: [ton pronostic]\n"
-            "CONFIANCE: [pourcentage entre 50 et 95]\n"
-            "COTE: [cote estimee, ex 1.85]\n\n"
-            "Sois precis et realiste. Si tu n'es pas sur d'une donnee, reste prudent."
-        )
+        infos = recherche_web(f"{match} stats forme composition equipe 2026")
+        infos += recherche_web(f"{match} blessures absents suspendus 2026")
+        infos += recherche_web(f"{match} cotes bookmakers pronostic 2026")
+        infos += recherche_web(f"{match} historique confrontations head to head")
+        infos += recherche_web(f"{match} classement 2026")
+        infos += recherche_web(f"{match} buteurs forme recente 2026")
+        prompt = f"""Tu es un expert FOOTBALL. Analyse ce match avec des DONNEES REELLES.
+Utilise UNIQUEMENT les joueurs actuellement dans ces clubs.
+
+Infos collectees sur le web :
+{infos}
+
+MATCH : {match}
+
+Fournis une analyse complete et structuree exactement comme ceci, en francais :
+
+⚽ MATCH : {match}
+🏆 Competition : [nom]
+
+📊 FORME ACTUELLE (5 derniers matchs) :
+→ [Equipe1] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle
+→ [Equipe2] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle
+
+🏠 DOMICILE / EXTERIEUR :
+→ [Equipe1] a domicile cette saison : [W-D-L]
+→ [Equipe2] a l'exterieur cette saison : [W-D-L]
+
+👥 JOUEURS CLES (noms reels) :
+→ [Equipe1] : [Nom joueur] - [Stat precise : X buts / X passes en N matchs]
+→ [Equipe2] : [Nom joueur] - [Stat precise : X buts / X passes en N matchs]
+
+🚑 BLESSURES & ABSENCES :
+→ [Equipe1] : [Noms confirmes ou Aucune absence confirmee]
+→ [Equipe2] : [Noms confirmes ou Aucune absence confirmee]
+
+🔄 HEAD TO HEAD :
+→ Historique global : [X victoires E1 / X nuls / X victoires E2]
+→ Dernier match : [date + score]
+
+📰 NEWS IMPORTANTES :
+→ [Infos recentes qui impactent le match : motivation, contexte, etc.]
+
+📈 PROBABILITES :
+→ [Equipe1] : XX%
+→ Match nul : XX%
+→ [Equipe2] : XX%
+
+🎯 SCORE PROBABLE : X - X
+
+⚽ BUTEURS PROBABLES :
+→ [Equipe1] : [Nom] (XX% de chances - X buts cette saison)
+→ [Equipe2] : [Nom] (XX% de chances - X buts cette saison)
+
+🔢 NOMBRE DE BUTS :
+→ Plus de 2.5 : XX%
+→ Moins de 2.5 : XX%
+→ Les deux equipes marquent (BTTS) : XX%
+
+💡 ANALYSE TACTIQUE :
+→ Systeme de jeu de chaque equipe et avantages/faiblesses
+
+Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :
+PARI: [ton pronostic]
+CONFIANCE: [pourcentage entre 50 et 95]
+COTE: [cote estimee, ex 1.85]
+
+Utilise les donnees reelles trouvees. Si une info est incertaine, indique-le, mais remplis chaque section au mieux."""
     try:
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
