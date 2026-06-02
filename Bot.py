@@ -783,6 +783,34 @@ def stats_reelles_foot(nom_match):
         except (requests.RequestException, ValueError, KeyError):
             pass
 
+        # 7. Forme individuelle : meilleurs buteurs de la ligue appartenant
+        #    aux deux equipes (buts + passes cette saison). 1 requete.
+        try:
+            rp = requests.get(
+                f"{base}/players/topscorers", headers=head,
+                params={"league": id_ligue, "season": saison_match}, timeout=10,
+            )
+            joueurs = {nom_dom: [], nom_ext: []}
+            for j in rp.json().get("response", []):
+                try:
+                    equipe = j["statistics"][0]["team"]["name"]
+                    if equipe not in joueurs:
+                        continue
+                    nom = j["player"]["name"]
+                    stats = j["statistics"][0]
+                    buts = stats["goals"].get("total") or 0
+                    passes = stats["goals"].get("assists") or 0
+                    matchs = stats["games"].get("appearences") or 0
+                    joueurs[equipe].append(
+                        f"{nom} ({buts} buts, {passes} passes en {matchs} matchs)")
+                except (KeyError, TypeError, IndexError):
+                    continue
+            for equipe, liste in joueurs.items():
+                if liste:
+                    lignes.append(f"Joueurs en forme {equipe} : " + " ; ".join(liste[:3]))
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+
         return "\n".join(lignes) + "\n"
     except (requests.RequestException, ValueError, KeyError) as e:
         log.error("stats_reelles_foot : %s", e)
@@ -946,10 +974,14 @@ Ne gonfle jamais la confiance pour faire plaisir."""
         prompt = f"""Tu es un analyste FOOTBALL rigoureux et HONNETE.
 
 REGLES ABSOLUES :
-1. Les DONNEES REELLES API ci-dessous sont fiables : utilise-les en PRIORITE.
-2. Pour tout le reste, si tu n'as PAS l'information, ecris "Donnee non disponible".
+1. Fonde ton analyse et ton pronostic UNIQUEMENT sur les STATISTIQUES et
+   les DONNEES REELLES API ci-dessous (forme des equipes, forme des joueurs,
+   confrontations, classement, blessures). C'est ta SEULE base de decision.
+2. NE te base PAS sur la cote pour choisir ton pari. La cote ne doit JAMAIS
+   influencer ton pronostic : c'est seulement une info secondaire pour le
+   parieur. Choisis le pari le plus probable selon les STATS, point.
+3. Si tu n'as PAS une information, ecris "Donnee non disponible".
    N'INVENTE JAMAIS un chiffre, un score, une blessure ou une stat.
-3. Mieux vaut admettre "non disponible" que donner une fausse information.
 4. Utilise uniquement les joueurs actuellement dans ces clubs.
 5. MISE EN PAGE : saute une ligne vide entre chaque section pour aerer.
 
@@ -1009,14 +1041,14 @@ Quand une info manque, ecris "Donnee non disponible" :
 → Systeme de jeu de chaque equipe et avantages/faiblesses
 
 Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :
-PARI: [ton pronostic - choisis le pari le plus SUR, pas le plus spectaculaire]
+PARI: [le pari le plus probable selon les STATISTIQUES, pas selon la cote]
 CONFIANCE: [pourcentage HONNETE entre 50 et 95 - base-le sur la quantite de
 donnees fiables dont tu disposes : peu de donnees = confiance basse]
-COTE: [cote estimee realiste, ex 1.85]
+COTE: [cote estimee realiste, ex 1.85 - donnee SECONDAIRE, juste indicative]
 
-RAPPEL : appuie ta CONFIANCE et ton PARI sur les DONNEES API reelles en priorite.
-Si les donnees sont minces, baisse la confiance et choisis un pari prudent.
-Ne gonfle jamais la confiance pour faire plaisir."""
+RAPPEL : ton PARI et ta CONFIANCE doivent venir UNIQUEMENT des statistiques
+(forme equipes, forme joueurs, H2H, classement, blessures). La cote n'entre
+PAS dans ta decision. Si les donnees sont minces, baisse la confiance."""
     try:
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
