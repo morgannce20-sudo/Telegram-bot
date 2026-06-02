@@ -26,7 +26,7 @@ SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
 FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
 TENNIS_API_KEY = os.environ.get("TENNIS_API_KEY")
 MONGODB_URL = os.environ.get("MONGODB_URL")
-CAPITAL_INITIAL = 50.0
+CAPITAL_INITIAL = 100.0
 SAISON_FOOT = os.environ.get("SAISON_FOOT", "2025")
 
 # Chat ou seront envoyes les pronostics automatiques (ton chat prive).
@@ -98,30 +98,37 @@ def update_bankroll(user_id, nouveau_capital):
 
 
 def calculer_mise(user_id, confiance, cote, bankroll):
-    """Calcule la mise conseillee avec gestion de bankroll securisee.
+    """Calcule la mise conseillee, en pourcentage de la bankroll.
 
-    - Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%.
+    Logique :
+    - Le pourcentage de base depend de la CONFIANCE, entre 2% et 8%.
+      (confiance 50% -> 2%, confiance 95% -> 8%, lineaire entre les deux)
     - Ajuste par le coefficient d'apprentissage (taux de reussite passe).
-    - Reduit les mises si la bankroll a beaucoup baisse (mode protection).
-    - Ne mise jamais plus que ce qui reste, ni moins d'un plancher.
+    - Reduction PROGRESSIVE si la bankroll a baisse sous le capital initial :
+      plus on a perdu, plus les mises baissent (sans jamais s'arreter).
+    - Plancher 1.00 et plafond = bankroll disponible.
     """
-    p = confiance / 100.0
-    b = max(cote - 1, 0.01)
-    kelly = (b * p - (1 - p)) / b
-    kelly = max(0.02, min(kelly, 0.10))
+    try:
+        c = float(confiance)
+    except (TypeError, ValueError):
+        c = 50.0
+    c = max(50.0, min(c, 95.0))
 
-    mise = bankroll * kelly * coefficient_apprentissage(user_id)
+    # Pourcentage entre 2% (a 50% de confiance) et 8% (a 95% de confiance).
+    pct = 0.02 + (c - 50.0) / (95.0 - 50.0) * (0.08 - 0.02)
 
-    # Protection : si la bankroll est tombee sous 50% du capital initial,
-    # on reduit encore les mises pour eviter de tout perdre.
-    if bankroll < CAPITAL_INITIAL * 0.5:
-        mise *= 0.5
+    mise = bankroll * pct * coefficient_apprentissage(user_id)
 
-    # Plancher : pas de mise en dessous de 0.50 (sauf si la bankroll est
-    # elle-meme inferieure, auquel cas on mise ce qui reste).
-    mise = max(mise, min(0.50, bankroll))
+    # Reduction progressive : on applique le ratio bankroll/capital quand on a
+    # perdu. Ex : bankroll a 70% du capital -> mises reduites a 70%. Bankroll
+    # au-dessus du capital -> pas de bonus (ratio plafonne a 1).
+    ratio = min(bankroll / CAPITAL_INITIAL, 1.0) if CAPITAL_INITIAL else 1.0
+    mise *= ratio
 
-    # Plafond absolu : ne jamais miser plus que la bankroll disponible.
+    # Plancher 1.00 (ou ce qui reste si la bankroll est minuscule).
+    mise = max(mise, min(1.00, bankroll))
+
+    # Plafond : jamais plus que la bankroll disponible.
     mise = min(mise, bankroll)
 
     return round(mise, 2)
@@ -927,7 +934,8 @@ def cmd_start(message):
         "/enattente - paris a regler\n"
         "/gagne <numero> - marquer un pari gagne\n"
         "/perdu <numero> - marquer un pari perdu\n"
-        "/stop - ne plus recevoir les pronostics automatiques\n\n"
+        "/stop - ne plus recevoir les pronostics automatiques\n"
+        "/reset - remettre la bankroll a 100 et effacer l'historique\n\n"
         "Sous chaque pronostic : boutons Gagne / Perdu / Non pris / "
         "Mise a jour live.\n\n"
         "Chaque utilisateur a sa propre bankroll et ses propres stats.",
@@ -956,6 +964,32 @@ def cmd_stats(message):
 @bot.message_handler(commands=["bankroll"])
 def cmd_bankroll(message):
     bot.reply_to(message, tableau_bord_bankroll(message.chat.id))
+
+
+@bot.message_handler(commands=["reset"])
+def cmd_reset(message):
+    """Remet la bankroll a 100 et efface l'historique de paris de l'utilisateur."""
+    parts = (message.text or "").split()
+    if len(parts) < 2 or parts[1].lower() != "confirme":
+        bot.reply_to(
+            message,
+            f"⚠️ Cela remet ta bankroll a {CAPITAL_INITIAL:.0f} et efface "
+            "TOUS tes paris enregistres.\n\n"
+            "Pour confirmer, tape : /reset confirme",
+        )
+        return
+    uid = str(message.chat.id)
+    try:
+        collection_paris.delete_many({"user_id": uid})
+        update_bankroll(uid, CAPITAL_INITIAL)
+        bot.reply_to(
+            message,
+            f"✅ Remise a zero effectuee.\nBankroll : {CAPITAL_INITIAL:.2f}\n"
+            "Historique des paris efface.",
+        )
+    except PyMongoError as e:
+        log.error("cmd_reset : %s", e)
+        bot.reply_to(message, "Erreur lors de la remise a zero.")
 
 
 @bot.message_handler(commands=["historique"])
