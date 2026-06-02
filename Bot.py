@@ -177,18 +177,81 @@ def detecter_sport(texte):
 
 def analyser_match(match, sport):
     infos = recherche_web(f"{match} pronostic statistiques {sport}")
-    prompt = (
-        f"Analyse ce match de {sport} : {match}\n"
-        f"Informations recentes : {infos}\n\n"
-        "Reponds exactement au format :\n"
-        "PARI: [ton pronostic]\n"
-        "CONFIANCE: [pourcentage entre 50 et 95]\n"
-        "COTE: [cote estimee, ex 1.85]"
-    )
+    if sport == "tennis":
+        prompt = (
+            f"Tu es un analyste tennis expert. Analyse ce match : {match}\n"
+            f"Informations recentes trouvees : {infos}\n\n"
+            "Produis une analyse detaillee et structuree EXACTEMENT dans ce format, "
+            "avec les emojis, en francais :\n\n"
+            "🎾 MATCH : [Joueur 1] vs [Joueur 2]\n"
+            "🏆 Tournoi : [nom] | Surface : [dur/terre/gazon]\n\n"
+            "📊 FORME RECENTE (5 derniers matchs) :\n"
+            "→ [Joueur 1] : [bilan] | Derniers resultats : [scores]\n"
+            "→ [Joueur 2] : [bilan] | Derniers resultats : [scores]\n\n"
+            "🎯 SURFACE :\n"
+            "→ Stats des deux joueurs sur cette surface\n\n"
+            "🤕 BLESSURES & FORME PHYSIQUE :\n"
+            "→ Etat physique de chaque joueur\n\n"
+            "🔄 HEAD TO HEAD :\n"
+            "→ Historique des confrontations + dernier match\n\n"
+            "📈 PROBABILITES :\n"
+            "→ [Joueur 1] : [%]\n"
+            "→ [Joueur 2] : [%]\n\n"
+            "💡 ANALYSE TACTIQUE :\n"
+            "→ Style de jeu et points cles\n\n"
+            "Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :\n"
+            "PARI: [ton pronostic]\n"
+            "CONFIANCE: [pourcentage entre 50 et 95]\n"
+            "COTE: [cote estimee, ex 1.85]\n\n"
+            "Sois precis et realiste. Si tu n'es pas sur d'une donnee, reste prudent."
+        )
+    else:
+        prompt = (
+            f"Tu es un analyste football expert. Analyse ce match : {match}\n"
+            f"Informations recentes trouvees : {infos}\n\n"
+            "Produis une analyse detaillee et structuree EXACTEMENT dans ce format, "
+            "avec les emojis, en francais :\n\n"
+            "⚽ MATCH : [Equipe 1] - [Equipe 2]\n"
+            "🏆 Competition : [nom]\n\n"
+            "📊 FORME ACTUELLE (5 derniers matchs) :\n"
+            "→ [Equipe 1] : [V-N-D] | Buts marques : [x] | Buts encaisses : [x] | Serie : [...]\n"
+            "→ [Equipe 2] : [V-N-D] | Buts marques : [x] | Buts encaisses : [x] | Serie : [...]\n\n"
+            "🏠 DOMICILE / EXTERIEUR :\n"
+            "→ [Equipe 1] a domicile cette saison : [V-N-D]\n"
+            "→ [Equipe 2] a l'exterieur cette saison : [V-N-D]\n\n"
+            "👥 JOUEURS CLES :\n"
+            "→ [Equipe 1] : [joueur - stats]\n"
+            "→ [Equipe 2] : [joueur - stats]\n\n"
+            "🚑 BLESSURES & ABSENCES :\n"
+            "→ [Equipe 1] : [liste]\n"
+            "→ [Equipe 2] : [liste]\n\n"
+            "🔄 HEAD TO HEAD :\n"
+            "→ Historique global + dernier match\n\n"
+            "📈 PROBABILITES :\n"
+            "→ [Equipe 1] : [%]\n"
+            "→ Match nul : [%]\n"
+            "→ [Equipe 2] : [%]\n\n"
+            "🎯 SCORE PROBABLE : [x-x]\n\n"
+            "⚽ BUTEURS PROBABLES :\n"
+            "→ [Equipe 1] : [joueur (% - stats)]\n"
+            "→ [Equipe 2] : [joueur (% - stats)]\n\n"
+            "🔢 NOMBRE DE BUTS :\n"
+            "→ Plus de 2.5 : [%]\n"
+            "→ Moins de 2.5 : [%]\n"
+            "→ Les deux equipes marquent (BTTS) : [%]\n\n"
+            "💡 ANALYSE TACTIQUE :\n"
+            "→ Systemes de jeu et points cles\n\n"
+            "Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :\n"
+            "PARI: [ton pronostic]\n"
+            "CONFIANCE: [pourcentage entre 50 et 95]\n"
+            "COTE: [cote estimee, ex 1.85]\n\n"
+            "Sois precis et realiste. Si tu n'es pas sur d'une donnee, reste prudent."
+        )
     try:
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.3-70b-versatile",
+            max_tokens=2000,
         )
         return chat.choices[0].message.content
     except Exception as e:
@@ -314,16 +377,23 @@ def cmd_matchs(message):
 def traiter_message(message):
     texte = message.text or ""
     sport = detecter_sport(texte)
+    attente = bot.reply_to(message, "Analyse en cours...")
     analyse = analyser_match(texte, sport)
     pari, confiance, cote = parser_analyse(analyse)
     bankroll = get_bankroll()
     mise = calculer_mise(confiance, cote, bankroll)
     sauvegarder_pari(texte, sport, pari, confiance, mise, cote)
-    bot.reply_to(
-        message,
-        f"Sport : {sport}\n{analyse}\n\n"
-        f"Mise conseillee : {mise:.2f} (bankroll : {bankroll:.2f})",
+
+    reponse = (
+        f"{analyse}\n\n"
+        f"💰 Mise conseillee : {mise:.2f} (bankroll : {bankroll:.2f})\n\n"
+        "⚠️ Analyse generee par IA a titre indicatif. Certaines donnees "
+        "peuvent etre incertaines ou non a jour. Verifie toujours avant de parier."
     )
+
+    # Telegram limite a 4096 caracteres : on decoupe si besoin
+    for i in range(0, len(reponse), 4000):
+        bot.send_message(message.chat.id, reponse[i:i + 4000])
 
 
 # ---------------------------------------------------------------------------
