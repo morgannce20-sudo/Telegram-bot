@@ -497,6 +497,107 @@ def detecter_sport(texte):
         return "foot"
 
 
+def stats_reelles_foot(nom_match):
+    """Recupere de VRAIES donnees API pour un match de foot du jour :
+    forme recente des 2 equipes, confrontations directes (H2H), classements.
+    Renvoie un texte pret a injecter dans le prompt, ou "" si indisponible.
+    """
+    if not FOOTBALL_API_KEY:
+        return ""
+    head = {"x-apisports-key": FOOTBALL_API_KEY}
+    base = "https://v3.football.api-sports.io"
+    try:
+        # 1. Retrouver le match du jour pour obtenir les IDs equipes + ligue.
+        r = requests.get(
+            f"{base}/fixtures", headers=head,
+            params={"date": datetime.now().strftime("%Y-%m-%d"),
+                    "league": "39,140,135,78,61,2,3", "season": SAISON_FOOT},
+            timeout=10,
+        )
+        fixture = None
+        for m in r.json().get("response", []):
+            dom = m["teams"]["home"]["name"]
+            ext = m["teams"]["away"]["name"]
+            if dom.lower() in nom_match.lower() or ext.lower() in nom_match.lower():
+                fixture = m
+                break
+        if not fixture:
+            return ""
+
+        id_dom = fixture["teams"]["home"]["id"]
+        id_ext = fixture["teams"]["away"]["id"]
+        nom_dom = fixture["teams"]["home"]["name"]
+        nom_ext = fixture["teams"]["away"]["name"]
+        id_ligue = fixture["league"]["id"]
+
+        lignes = ["=== DONNEES REELLES API (fiables) ==="]
+
+        # 2. Forme recente : 5 derniers matchs de chaque equipe.
+        def forme(team_id, team_nom):
+            rr = requests.get(
+                f"{base}/fixtures", headers=head,
+                params={"team": team_id, "last": 5}, timeout=10,
+            )
+            res = []
+            for f in rr.json().get("response", []):
+                try:
+                    h = f["teams"]["home"]["name"]
+                    a = f["teams"]["away"]["name"]
+                    bh = f["goals"]["home"]
+                    ba = f["goals"]["away"]
+                    res.append(f"{h} {bh}-{ba} {a}")
+                except (KeyError, TypeError):
+                    continue
+            return f"{team_nom} (5 derniers) : " + " | ".join(res) if res else ""
+
+        f_dom = forme(id_dom, nom_dom)
+        f_ext = forme(id_ext, nom_ext)
+        if f_dom:
+            lignes.append(f_dom)
+        if f_ext:
+            lignes.append(f_ext)
+
+        # 3. Head to head : 5 dernieres confrontations directes.
+        rh = requests.get(
+            f"{base}/fixtures/headtohead", headers=head,
+            params={"h2h": f"{id_dom}-{id_ext}", "last": 5}, timeout=10,
+        )
+        h2h = []
+        for f in rh.json().get("response", []):
+            try:
+                h = f["teams"]["home"]["name"]
+                a = f["teams"]["away"]["name"]
+                bh = f["goals"]["home"]
+                ba = f["goals"]["away"]
+                d = f["fixture"]["date"][:10]
+                h2h.append(f"{d} : {h} {bh}-{ba} {a}")
+            except (KeyError, TypeError):
+                continue
+        if h2h:
+            lignes.append("Confrontations directes : " + " | ".join(h2h))
+
+        # 4. Classement des 2 equipes dans la ligue.
+        rs = requests.get(
+            f"{base}/standings", headers=head,
+            params={"league": id_ligue, "season": SAISON_FOOT}, timeout=10,
+        )
+        try:
+            classement = rs.json()["response"][0]["league"]["standings"][0]
+            for equipe in classement:
+                if equipe["team"]["id"] in (id_dom, id_ext):
+                    lignes.append(
+                        f'{equipe["team"]["name"]} : {equipe["rank"]}e, '
+                        f'{equipe["points"]} pts, forme {equipe.get("form", "?")}'
+                    )
+        except (KeyError, IndexError, TypeError):
+            pass
+
+        return "\n".join(lignes) + "\n"
+    except (requests.RequestException, ValueError, KeyError) as e:
+        log.error("stats_reelles_foot : %s", e)
+        return ""
+
+
 def analyser_match(match, sport):
     if sport == "tennis":
         infos = recherche_web(f"{match} tennis stats forme recente 2026")
@@ -504,10 +605,15 @@ def analyser_match(match, sport):
         infos += recherche_web(f"{match} blessure actualite 2026")
         infos += recherche_web(f"{match} classement ATP WTA 2026")
         infos += recherche_web(f"{match} pronostic cote bookmaker 2026")
-        prompt = f"""Tu es un expert TENNIS. Analyse ce match avec des DONNEES REELLES.
+        prompt = f"""Tu es un analyste TENNIS rigoureux et HONNETE.
 Ces personnes sont des JOUEURS DE TENNIS professionnels. Ne parle JAMAIS de football.
 
-Infos collectees sur le web :
+REGLES ABSOLUES :
+1. Si tu n'as PAS une information, ecris "Donnee non disponible".
+2. N'INVENTE JAMAIS un score, un classement, une blessure ou une stat.
+3. Mieux vaut admettre "non disponible" que donner une fausse information.
+
+Infos collectees sur le web (a recouper, pas toujours fiables) :
 {infos}
 
 MATCH : {match}
@@ -546,42 +652,53 @@ Fournis une analyse complete et structuree exactement comme ceci, en francais :
 → Style de jeu de chaque joueur et comment ils s'affrontent sur cette surface
 
 Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :
-PARI: [ton pronostic]
-CONFIANCE: [pourcentage entre 50 et 95]
-COTE: [cote estimee, ex 1.85]
+PARI: [ton pronostic - le plus SUR, pas le plus spectaculaire]
+CONFIANCE: [pourcentage HONNETE entre 50 et 95 - peu de donnees = confiance basse]
+COTE: [cote estimee realiste, ex 1.85]
 
-Utilise les donnees reelles trouvees. Si une info est incertaine, indique-le, mais remplis chaque section au mieux."""
+RAPPEL : si les donnees sont minces, baisse la confiance et reste prudent.
+Ne gonfle jamais la confiance pour faire plaisir."""
     else:
+        donnees_api = stats_reelles_foot(match)
         infos = recherche_web(f"{match} stats forme composition equipe 2026")
         infos += recherche_web(f"{match} blessures absents suspendus 2026")
         infos += recherche_web(f"{match} cotes bookmakers pronostic 2026")
         infos += recherche_web(f"{match} historique confrontations head to head")
         infos += recherche_web(f"{match} classement 2026")
         infos += recherche_web(f"{match} buteurs forme recente 2026")
-        prompt = f"""Tu es un expert FOOTBALL. Analyse ce match avec des DONNEES REELLES.
-Utilise UNIQUEMENT les joueurs actuellement dans ces clubs.
+        prompt = f"""Tu es un analyste FOOTBALL rigoureux et HONNETE.
 
-Infos collectees sur le web :
+REGLES ABSOLUES :
+1. Les DONNEES REELLES API ci-dessous sont fiables : utilise-les en PRIORITE.
+2. Pour tout le reste, si tu n'as PAS l'information, ecris "Donnee non disponible".
+   N'INVENTE JAMAIS un chiffre, un score, une blessure ou une stat.
+3. Mieux vaut admettre "non disponible" que donner une fausse information.
+4. Utilise uniquement les joueurs actuellement dans ces clubs.
+
+{donnees_api}
+Infos web complementaires (moins fiables, a recouper) :
 {infos}
 
 MATCH : {match}
 
-Fournis une analyse complete et structuree exactement comme ceci, en francais :
+Fournis une analyse structuree exactement comme ceci, en francais.
+Quand tu utilises une donnee API fiable, ajoute (API) a la fin de la ligne.
+Quand une info manque, ecris "Donnee non disponible" :
 
 ⚽ MATCH : {match}
 🏆 Competition : [nom]
 
 📊 FORME ACTUELLE (5 derniers matchs) :
-→ [Equipe1] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle
-→ [Equipe2] : [W-D-L] | Buts marques : X | Buts encaisses : X | Serie actuelle
+→ [Equipe1] : [resultats reels] | Serie actuelle
+→ [Equipe2] : [resultats reels] | Serie actuelle
 
 🏠 DOMICILE / EXTERIEUR :
-→ [Equipe1] a domicile cette saison : [W-D-L]
-→ [Equipe2] a l'exterieur cette saison : [W-D-L]
+→ [Equipe1] a domicile cette saison : [W-D-L ou non disponible]
+→ [Equipe2] a l'exterieur cette saison : [W-D-L ou non disponible]
 
 👥 JOUEURS CLES (noms reels) :
-→ [Equipe1] : [Nom joueur] - [Stat precise : X buts / X passes en N matchs]
-→ [Equipe2] : [Nom joueur] - [Stat precise : X buts / X passes en N matchs]
+→ [Equipe1] : [Nom joueur] - [Stat ou non disponible]
+→ [Equipe2] : [Nom joueur] - [Stat ou non disponible]
 
 🚑 BLESSURES & ABSENCES :
 → [Equipe1] : [Noms confirmes ou Aucune absence confirmee]
@@ -614,11 +731,14 @@ Fournis une analyse complete et structuree exactement comme ceci, en francais :
 → Systeme de jeu de chaque equipe et avantages/faiblesses
 
 Puis termine OBLIGATOIREMENT par ces 3 lignes exactes :
-PARI: [ton pronostic]
-CONFIANCE: [pourcentage entre 50 et 95]
-COTE: [cote estimee, ex 1.85]
+PARI: [ton pronostic - choisis le pari le plus SUR, pas le plus spectaculaire]
+CONFIANCE: [pourcentage HONNETE entre 50 et 95 - base-le sur la quantite de
+donnees fiables dont tu disposes : peu de donnees = confiance basse]
+COTE: [cote estimee realiste, ex 1.85]
 
-Utilise les donnees reelles trouvees. Si une info est incertaine, indique-le, mais remplis chaque section au mieux."""
+RAPPEL : appuie ta CONFIANCE et ton PARI sur les DONNEES API reelles en priorite.
+Si les donnees sont minces, baisse la confiance et choisis un pari prudent.
+Ne gonfle jamais la confiance pour faire plaisir."""
     try:
         chat = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
