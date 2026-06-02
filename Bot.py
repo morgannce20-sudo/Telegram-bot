@@ -96,13 +96,32 @@ def update_bankroll(nouveau_capital):
 
 
 def calculer_mise(confiance, cote, bankroll):
-    """Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%,
-    puis ajuste par le coefficient d'apprentissage (taux de reussite passe)."""
+    """Calcule la mise conseillee avec gestion de bankroll securisee.
+
+    - Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%.
+    - Ajuste par le coefficient d'apprentissage (taux de reussite passe).
+    - Reduit les mises si la bankroll a beaucoup baisse (mode protection).
+    - Ne mise jamais plus que ce qui reste, ni moins d'un plancher.
+    """
     p = confiance / 100.0
     b = max(cote - 1, 0.01)
     kelly = (b * p - (1 - p)) / b
     kelly = max(0.02, min(kelly, 0.10))
+
     mise = bankroll * kelly * coefficient_apprentissage()
+
+    # Protection : si la bankroll est tombee sous 50% du capital initial,
+    # on reduit encore les mises pour eviter de tout perdre.
+    if bankroll < CAPITAL_INITIAL * 0.5:
+        mise *= 0.5
+
+    # Plancher : pas de mise en dessous de 0.50 (sauf si la bankroll est
+    # elle-meme inferieure, auquel cas on mise ce qui reste).
+    mise = max(mise, min(0.50, bankroll))
+
+    # Plafond absolu : ne jamais miser plus que la bankroll disponible.
+    mise = min(mise, bankroll)
+
     return round(mise, 2)
 
 
@@ -148,6 +167,57 @@ def get_statistiques():
         f"Taux de reussite : {taux}%\n"
         f"Gain/Perte total : {gain_total:.2f}\n"
         f"Bankroll actuelle : {get_bankroll():.2f}"
+    )
+
+
+def tableau_bord_bankroll():
+    """Tableau de bord complet : capital, gains, pertes, ROI, etc."""
+    bankroll = get_bankroll()
+    try:
+        regles = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
+        attente = list(collection_paris.find({"resultat": "en attente"}))
+    except PyMongoError as e:
+        log.error("tableau_bord_bankroll : %s", e)
+        return "Erreur de connexion a la base de donnees."
+
+    gagnes = [p for p in regles if p["resultat"] == "gagne"]
+    perdus = [p for p in regles if p["resultat"] == "perdu"]
+    total_regles = len(regles)
+
+    total_mise = sum(p.get("mise", 0) for p in regles)        # mise sur paris termines
+    gains_bruts = sum(p.get("gain", 0) for p in gagnes)       # benefices des gagnes (>0)
+    pertes_brutes = sum(p.get("gain", 0) for p in perdus)     # pertes des perdus (<0)
+    net = gains_bruts + pertes_brutes                         # resultat net
+    mise_en_cours = sum(p.get("mise", 0) for p in attente)    # argent engage non resolu
+
+    taux = round(len(gagnes) / total_regles * 100, 1) if total_regles else 0
+    roi = round(net / total_mise * 100, 1) if total_mise else 0
+    evolution = round((bankroll - CAPITAL_INITIAL) / CAPITAL_INITIAL * 100, 1) \
+        if CAPITAL_INITIAL else 0
+
+    fleche = "📈" if net >= 0 else "📉"
+    coef = coefficient_apprentissage()
+    mode = ({1.2: "agressif (+20%)", 1.0: "normal", 0.6: "prudent (-40%)"}
+            .get(coef, "normal"))
+
+    return (
+        "💰 GESTION DE LA BANKROLL\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Capital de depart : {CAPITAL_INITIAL:.2f}\n"
+        f"Capital actuel    : {bankroll:.2f}\n"
+        f"Evolution         : {evolution:+.1f}%\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"{fleche} Resultat net   : {net:+.2f}\n"
+        f"✅ Total gagne    : {gains_bruts:+.2f}\n"
+        f"❌ Total perdu    : {pertes_brutes:+.2f}\n"
+        f"💵 Total mise     : {total_mise:.2f}\n"
+        f"⏳ Engage en cours : {mise_en_cours:.2f} ({len(attente)} pari(s))\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"Paris termines    : {total_regles}\n"
+        f"Gagnes / Perdus   : {len(gagnes)} / {len(perdus)}\n"
+        f"Taux de reussite  : {taux}%\n"
+        f"ROI               : {roi:+.1f}%\n"
+        f"Mode de mise      : {mode}"
     )
 
 
@@ -658,7 +728,7 @@ def cmd_stats(message):
 
 @bot.message_handler(commands=["bankroll"])
 def cmd_bankroll(message):
-    bot.reply_to(message, f"Bankroll actuelle : {get_bankroll():.2f}")
+    bot.reply_to(message, tableau_bord_bankroll())
 
 
 @bot.message_handler(commands=["historique"])
@@ -801,6 +871,16 @@ def clic_bouton(call):
         log.error("clic_bouton : %s", e)
 
 
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("bk:"))
+def clic_bankroll(call):
+    """Affiche le tableau de bord de la bankroll quand on clique le bouton."""
+    bot.answer_callback_query(call.id, "Bankroll")
+    try:
+        bot.send_message(call.message.chat.id, tableau_bord_bankroll())
+    except Exception as e:
+        log.error("clic_bankroll : %s", e)
+
+
 @bot.message_handler(commands=["matchs"])
 def cmd_matchs(message):
     foot = get_matchs_foot()
@@ -845,6 +925,9 @@ def envoyer_analyse(chat_id, texte, sport):
         clavier.add(
             telebot.types.InlineKeyboardButton("🚫 Non pris", callback_data=f"n:{pari_id}"),
             telebot.types.InlineKeyboardButton("🔄 Mise a jour live", callback_data=f"l:{pari_id}"),
+        )
+        clavier.add(
+            telebot.types.InlineKeyboardButton("💰 Voir bankroll", callback_data="bk:0"),
         )
 
     # Telegram limite a 4096 caracteres : on decoupe si besoin.
