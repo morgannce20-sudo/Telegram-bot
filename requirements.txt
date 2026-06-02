@@ -1,5 +1,4 @@
-pyTelegramBotAPI
-groq
-requests
-schedule
-pymongo
+pyTelegramBotAPI==4.21.0
+groq==0.11.0
+requests==2.32.3
+pymongo==4.8.0
