@@ -58,6 +58,7 @@ db = mongo_client["pronostics"]
 collection_paris = db["paris"]
 collection_bankroll = db["bankroll"]
 collection_envois = db["envois_auto"]
+collection_abonnes = db["abonnes"]
 
 
 def verifier_mongo():
@@ -74,28 +75,29 @@ def verifier_mongo():
 # ---------------------------------------------------------------------------
 # Bankroll & paris
 # ---------------------------------------------------------------------------
-def get_bankroll():
+def get_bankroll(user_id):
+    """Bankroll propre a chaque utilisateur (identifie par son chat id)."""
     try:
-        doc = collection_bankroll.find_one({"id": "bankroll"})
+        doc = collection_bankroll.find_one({"id": str(user_id)})
         if doc:
             return doc["capital"]
-        collection_bankroll.insert_one({"id": "bankroll", "capital": CAPITAL_INITIAL})
+        collection_bankroll.insert_one({"id": str(user_id), "capital": CAPITAL_INITIAL})
         return CAPITAL_INITIAL
     except PyMongoError as e:
         log.error("get_bankroll : %s", e)
         return CAPITAL_INITIAL
 
 
-def update_bankroll(nouveau_capital):
+def update_bankroll(user_id, nouveau_capital):
     try:
         collection_bankroll.update_one(
-            {"id": "bankroll"}, {"$set": {"capital": nouveau_capital}}, upsert=True
+            {"id": str(user_id)}, {"$set": {"capital": nouveau_capital}}, upsert=True
         )
     except PyMongoError as e:
         log.error("update_bankroll : %s", e)
 
 
-def calculer_mise(confiance, cote, bankroll):
+def calculer_mise(user_id, confiance, cote, bankroll):
     """Calcule la mise conseillee avec gestion de bankroll securisee.
 
     - Kelly fractionne base sur la cote reelle, plafonne entre 2% et 10%.
@@ -108,7 +110,7 @@ def calculer_mise(confiance, cote, bankroll):
     kelly = (b * p - (1 - p)) / b
     kelly = max(0.02, min(kelly, 0.10))
 
-    mise = bankroll * kelly * coefficient_apprentissage()
+    mise = bankroll * kelly * coefficient_apprentissage(user_id)
 
     # Protection : si la bankroll est tombee sous 50% du capital initial,
     # on reduit encore les mises pour eviter de tout perdre.
@@ -125,11 +127,12 @@ def calculer_mise(confiance, cote, bankroll):
     return round(mise, 2)
 
 
-def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
+def sauvegarder_pari(user_id, match, sport, pari, confiance, mise, cote):
     try:
-        pari_id = datetime.now().strftime("%Y%m%d%H%M%S")
+        pari_id = f"{user_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         collection_paris.insert_one({
             "_id": pari_id,
+            "user_id": str(user_id),
             "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "date_jour": datetime.now().strftime("%Y-%m-%d"),
             "match": match,
@@ -147,9 +150,10 @@ def sauvegarder_pari(match, sport, pari, confiance, mise, cote):
         return None
 
 
-def get_statistiques():
+def get_statistiques(user_id):
     try:
-        paris = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
+        paris = list(collection_paris.find(
+            {"user_id": str(user_id), "resultat": {"$in": ["gagne", "perdu"]}}))
     except PyMongoError as e:
         log.error("get_statistiques : %s", e)
         return "Erreur de connexion a la base de donnees."
@@ -166,16 +170,18 @@ def get_statistiques():
         f"Gagnes : {gagnes} | Perdus : {pertes}\n"
         f"Taux de reussite : {taux}%\n"
         f"Gain/Perte total : {gain_total:.2f}\n"
-        f"Bankroll actuelle : {get_bankroll():.2f}"
+        f"Bankroll actuelle : {get_bankroll(user_id):.2f}"
     )
 
 
-def tableau_bord_bankroll():
+def tableau_bord_bankroll(user_id):
     """Tableau de bord complet : capital, gains, pertes, ROI, etc."""
-    bankroll = get_bankroll()
+    bankroll = get_bankroll(user_id)
     try:
-        regles = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
-        attente = list(collection_paris.find({"resultat": "en attente"}))
+        regles = list(collection_paris.find(
+            {"user_id": str(user_id), "resultat": {"$in": ["gagne", "perdu"]}}))
+        attente = list(collection_paris.find(
+            {"user_id": str(user_id), "resultat": "en attente"}))
     except PyMongoError as e:
         log.error("tableau_bord_bankroll : %s", e)
         return "Erreur de connexion a la base de donnees."
@@ -196,7 +202,7 @@ def tableau_bord_bankroll():
         if CAPITAL_INITIAL else 0
 
     fleche = "📈" if net >= 0 else "📉"
-    coef = coefficient_apprentissage()
+    coef = coefficient_apprentissage(user_id)
     mode = ({1.2: "agressif (+20%)", 1.0: "normal", 0.6: "prudent (-40%)"}
             .get(coef, "normal"))
 
@@ -224,8 +230,8 @@ def tableau_bord_bankroll():
 # ---------------------------------------------------------------------------
 # Reglement des paris, apprentissage & verification automatique
 # ---------------------------------------------------------------------------
-def coefficient_apprentissage():
-    """Ajuste les mises selon le taux de reussite reel passe.
+def coefficient_apprentissage(user_id):
+    """Ajuste les mises selon le taux de reussite reel passe (par utilisateur).
 
     - taux >= 60% : on mise un peu plus (coef 1.2)
     - taux 45-60% : mise normale (coef 1.0)
@@ -233,7 +239,8 @@ def coefficient_apprentissage():
     Tant qu'il y a moins de 10 paris regles, on reste neutre (coef 1.0).
     """
     try:
-        regles = list(collection_paris.find({"resultat": {"$in": ["gagne", "perdu"]}}))
+        regles = list(collection_paris.find(
+            {"user_id": str(user_id), "resultat": {"$in": ["gagne", "perdu"]}}))
     except PyMongoError as e:
         log.error("coefficient_apprentissage : %s", e)
         return 1.0
@@ -249,7 +256,8 @@ def coefficient_apprentissage():
 
 
 def regler_pari(pari, gagne):
-    """Met a jour un pari (gagne/perdu), recalcule la bankroll et le gain."""
+    """Met a jour un pari (gagne/perdu), recalcule la bankroll du proprietaire."""
+    user_id = pari.get("user_id", MON_CHAT_ID)
     mise = pari.get("mise", 0)
     cote = pari.get("cote", 1)
     if gagne:
@@ -263,13 +271,13 @@ def regler_pari(pari, gagne):
             {"_id": pari["_id"]},
             {"$set": {"resultat": resultat, "gain": gain}},
         )
-        nouvelle_bankroll = round(get_bankroll() + gain, 2)
-        update_bankroll(nouvelle_bankroll)
+        nouvelle_bankroll = round(get_bankroll(user_id) + gain, 2)
+        update_bankroll(user_id, nouvelle_bankroll)
         log.info("Pari regle : %s -> %s (%.2f)", pari["match"], resultat, gain)
         return gain, nouvelle_bankroll
     except PyMongoError as e:
         log.error("regler_pari : %s", e)
-        return 0, get_bankroll()
+        return 0, get_bankroll(user_id)
 
 
 def score_match_foot(nom_match):
@@ -438,8 +446,9 @@ clairement et reste prudent."""
         gain, bankroll = regler_pari(p, gagne)
         try:
             statut = "GAGNE ✅" if gagne else "PERDU ❌"
+            destinataire = p.get("user_id", MON_CHAT_ID)
             bot.send_message(
-                MON_CHAT_ID,
+                destinataire,
                 f"Resultat automatique\n{p['match']} : {buts_dom}-{buts_ext}\n"
                 f"Pari : {p['pari']}\n{statut} | Gain : {gain:+.2f}\n"
                 f"Nouvelle bankroll : {bankroll:.2f}",
@@ -705,9 +714,20 @@ def get_matchs_tennis():
 # ---------------------------------------------------------------------------
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
+    # On enregistre l'utilisateur comme abonne aux pronostics automatiques.
+    try:
+        collection_abonnes.update_one(
+            {"_id": str(message.chat.id)},
+            {"$set": {"actif": True,
+                      "depuis": datetime.now().isoformat()}},
+            upsert=True,
+        )
+    except PyMongoError as e:
+        log.error("inscription abonne : %s", e)
     bot.reply_to(
         message,
-        "Bot de pronostics actif.\n"
+        "Bot de pronostics actif. Tu es abonne aux pronostics automatiques "
+        "(30 min avant chaque match).\n\n"
         "Envoie un match a analyser, ou utilise :\n"
         "/matchs - matchs du jour\n"
         "/stats - statistiques\n"
@@ -715,26 +735,43 @@ def cmd_start(message):
         "/historique - derniers paris\n"
         "/enattente - paris a regler\n"
         "/gagne <numero> - marquer un pari gagne\n"
-        "/perdu <numero> - marquer un pari perdu\n\n"
+        "/perdu <numero> - marquer un pari perdu\n"
+        "/stop - ne plus recevoir les pronostics automatiques\n\n"
         "Sous chaque pronostic : boutons Gagne / Perdu / Non pris / "
-        "Mise a jour live.",
+        "Mise a jour live.\n\n"
+        "Chaque utilisateur a sa propre bankroll et ses propres stats.",
     )
+
+
+@bot.message_handler(commands=["stop"])
+def cmd_stop(message):
+    try:
+        collection_abonnes.update_one(
+            {"_id": str(message.chat.id)},
+            {"$set": {"actif": False}},
+            upsert=True,
+        )
+    except PyMongoError:
+        pass
+    bot.reply_to(message, "Tu ne recevras plus les pronostics automatiques. "
+                          "Tape /start pour te reabonner.")
 
 
 @bot.message_handler(commands=["stats"])
 def cmd_stats(message):
-    bot.reply_to(message, get_statistiques())
+    bot.reply_to(message, get_statistiques(message.chat.id))
 
 
 @bot.message_handler(commands=["bankroll"])
 def cmd_bankroll(message):
-    bot.reply_to(message, tableau_bord_bankroll())
+    bot.reply_to(message, tableau_bord_bankroll(message.chat.id))
 
 
 @bot.message_handler(commands=["historique"])
 def cmd_historique(message):
     try:
-        paris = list(collection_paris.find().sort("_id", -1).limit(10))
+        paris = list(collection_paris.find(
+            {"user_id": str(message.chat.id)}).sort("_id", -1).limit(10))
     except PyMongoError:
         bot.reply_to(message, "Erreur base de donnees.")
         return
@@ -743,7 +780,7 @@ def cmd_historique(message):
         return
     lignes = ["DERNIERS PARIS :\n"]
     for p in paris:
-        icone = {"gagne": "✅", "perdu": "❌"}.get(p["resultat"], "⏳")
+        icone = {"gagne": "✅", "perdu": "❌", "non pris": "🚫"}.get(p["resultat"], "⏳")
         lignes.append(
             f'{icone} {p["match"]}\n'
             f'   {p.get("pari", "?")} | cote {p.get("cote", "?")} | '
@@ -756,7 +793,8 @@ def cmd_historique(message):
 def cmd_enattente(message):
     """Liste les paris non regles avec leur numero, pour /gagne et /perdu."""
     try:
-        paris = list(collection_paris.find({"resultat": "en attente"}).sort("_id", -1))
+        paris = list(collection_paris.find(
+            {"user_id": str(message.chat.id), "resultat": "en attente"}).sort("_id", -1))
     except PyMongoError:
         bot.reply_to(message, "Erreur base de donnees.")
         return
@@ -778,7 +816,8 @@ def _regler_par_numero(message, gagne):
         return
     numero = int(parts[1])
     try:
-        paris = list(collection_paris.find({"resultat": "en attente"}).sort("_id", -1))
+        paris = list(collection_paris.find(
+            {"user_id": str(message.chat.id), "resultat": "en attente"}).sort("_id", -1))
     except PyMongoError:
         bot.reply_to(message, "Erreur base de donnees.")
         return
@@ -876,7 +915,8 @@ def clic_bankroll(call):
     """Affiche le tableau de bord de la bankroll quand on clique le bouton."""
     bot.answer_callback_query(call.id, "Bankroll")
     try:
-        bot.send_message(call.message.chat.id, tableau_bord_bankroll())
+        bot.send_message(call.message.chat.id,
+                         tableau_bord_bankroll(call.message.chat.id))
     except Exception as e:
         log.error("clic_bankroll : %s", e)
 
@@ -901,12 +941,13 @@ def traiter_message(message):
 
 
 def envoyer_analyse(chat_id, texte, sport):
-    """Analyse un match et envoie le resultat decoupe au chat indique."""
+    """Analyse un match et envoie le resultat au chat. La bankroll, la mise
+    et le pari sont propres a l'utilisateur (chat_id)."""
     analyse = analyser_match(texte, sport)
     pari, confiance, cote = parser_analyse(analyse)
-    bankroll = get_bankroll()
-    mise = calculer_mise(confiance, cote, bankroll)
-    pari_id = sauvegarder_pari(texte, sport, pari, confiance, mise, cote)
+    bankroll = get_bankroll(chat_id)
+    mise = calculer_mise(chat_id, confiance, cote, bankroll)
+    pari_id = sauvegarder_pari(chat_id, texte, sport, pari, confiance, mise, cote)
 
     reponse = (
         f"{analyse}\n\n"
@@ -979,8 +1020,23 @@ def minutes_avant_match(heure_str):
         return None
 
 
+def liste_abonnes():
+    """Renvoie la liste des chat ids abonnes actifs."""
+    try:
+        docs = list(collection_abonnes.find({"actif": True}))
+        ids = [d["_id"] for d in docs]
+        # Garantit que le proprietaire principal recoit toujours les pronostics.
+        if MON_CHAT_ID not in ids:
+            ids.append(MON_CHAT_ID)
+        return ids
+    except PyMongoError as e:
+        log.error("liste_abonnes : %s", e)
+        return [MON_CHAT_ID]
+
+
 def verifier_et_envoyer():
-    """Parcourt les matchs du jour et envoie ceux qui demarrent bientot."""
+    """Parcourt les matchs du jour et envoie ceux qui demarrent bientot
+    a TOUS les abonnes actifs (chacun avec sa propre bankroll)."""
     aujourd_hui = datetime.utcnow().strftime("%Y-%m-%d")
 
     foot = [{**m, "sport": "foot"} for m in get_matchs_foot()]
@@ -992,20 +1048,22 @@ def verifier_et_envoyer():
             continue
         # On envoie si le match commence dans MINUTES_AVANT a MINUTES_AVANT+FENETRE.
         if MINUTES_AVANT <= minutes < MINUTES_AVANT + FENETRE_MINUTES:
-            cle = f'{aujourd_hui}_{m["sport"]}_{m["match"]}'
-            if deja_envoye(cle):
-                continue
-            try:
-                bot.send_message(
-                    MON_CHAT_ID,
-                    f'⏰ Match dans ~{int(minutes)} min\n{m["match"]} '
-                    f'({m["heure"]} UTC)\nAnalyse en cours...',
-                )
-                envoyer_analyse(MON_CHAT_ID, m["match"], m["sport"])
-                marquer_envoye(cle)
-                log.info("Pronostic auto envoye : %s", m["match"])
-            except Exception as e:
-                log.error("Echec envoi auto pour %s : %s", m["match"], e)
+            for abonne in liste_abonnes():
+                # Cle unique par abonne ET par match : chacun le recoit une fois.
+                cle = f'{aujourd_hui}_{abonne}_{m["sport"]}_{m["match"]}'
+                if deja_envoye(cle):
+                    continue
+                try:
+                    bot.send_message(
+                        abonne,
+                        f'⏰ Match dans ~{int(minutes)} min\n{m["match"]} '
+                        f'({m["heure"]} UTC)\nAnalyse en cours...',
+                    )
+                    envoyer_analyse(abonne, m["match"], m["sport"])
+                    marquer_envoye(cle)
+                    log.info("Pronostic auto envoye a %s : %s", abonne, m["match"])
+                except Exception as e:
+                    log.error("Echec envoi auto (%s) %s : %s", abonne, m["match"], e)
 
 
 def lancer_planificateur():
