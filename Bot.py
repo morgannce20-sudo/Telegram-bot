@@ -1189,12 +1189,28 @@ def cmd_start(message):
         )
     except PyMongoError as e:
         log.error("inscription abonne : %s", e)
-    bot.reply_to(
-        message,
+
+    clavier = telebot.types.InlineKeyboardMarkup()
+    clavier.add(
+        telebot.types.InlineKeyboardButton(
+            "🔄 Verifier les matchs maintenant", callback_data="verif:0"),
+    )
+    clavier.add(
+        telebot.types.InlineKeyboardButton("⚽ Foot du jour", callback_data="foot:0"),
+        telebot.types.InlineKeyboardButton("🎾 Tennis du jour", callback_data="tennis:0"),
+    )
+    clavier.add(
+        telebot.types.InlineKeyboardButton("💰 Bankroll", callback_data="bk:0"),
+    )
+
+    bot.send_message(
+        message.chat.id,
         "Bot de pronostics actif. Tu es abonne aux pronostics automatiques "
         "(30 min avant chaque match).\n\n"
         "Envoie un match a analyser, ou utilise :\n"
-        "/matchs - matchs du jour\n"
+        "/matchs - tous les matchs du jour\n"
+        "/foot - liste des matchs de foot\n"
+        "/tennis - liste des matchs de tennis\n"
         "/stats - statistiques\n"
         "/bankroll - capital actuel\n"
         "/efficacite - fiabilite du bot (taux reel par confiance)\n"
@@ -1205,10 +1221,45 @@ def cmd_start(message):
         "/perdu <numero> - marquer un pari perdu\n"
         "/stop - ne plus recevoir les pronostics automatiques\n"
         "/reset - remettre la bankroll a 100 et effacer l'historique\n\n"
-        "Sous chaque pronostic : boutons Gagne / Perdu / Non pris / "
-        "Mise a jour live.\n\n"
-        "Chaque utilisateur a sa propre bankroll et ses propres stats.",
+        "Le bouton ci-dessous force une verification immediate et envoie "
+        "les alertes des matchs proches pas encore envoyees.",
+        reply_markup=clavier,
     )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("verif:"))
+def clic_verifier(call):
+    """Force une verification immediate des matchs (rattrape les alertes)."""
+    bot.answer_callback_query(call.id, "Verification en cours...")
+    bot.send_message(call.message.chat.id,
+                     "🔄 Verification des matchs en cours... "
+                     "Les alertes proches non envoyees vont arriver.")
+    try:
+        verifier_et_envoyer()
+        bot.send_message(call.message.chat.id, "✅ Verification terminee.")
+    except Exception as e:
+        log.error("clic_verifier : %s", e)
+        bot.send_message(call.message.chat.id, "Erreur pendant la verification.")
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("foot:"))
+def clic_foot(call):
+    """Affiche la liste des matchs de foot du jour."""
+    bot.answer_callback_query(call.id, "Foot du jour")
+    try:
+        bot.send_message(call.message.chat.id, texte_foot_jour())
+    except Exception as e:
+        log.error("clic_foot : %s", e)
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("tennis:"))
+def clic_tennis(call):
+    """Affiche la liste des matchs de tennis du jour."""
+    bot.answer_callback_query(call.id, "Tennis du jour")
+    try:
+        bot.send_message(call.message.chat.id, texte_tennis_jour())
+    except Exception as e:
+        log.error("clic_tennis : %s", e)
 
 
 @bot.message_handler(commands=["stop"])
@@ -1470,7 +1521,7 @@ def heure_fr(heure_utc):
         return heure_utc
 
 
-def cmd_matchs(message):
+def texte_matchs_jour():
     foot = get_matchs_foot()
     tennis = get_matchs_tennis()
     lignes = ["MATCHS DU JOUR (heure de Paris)\n", "⚽ FOOT :"]
@@ -1481,7 +1532,48 @@ def cmd_matchs(message):
                for m in tennis] or ["  aucun"]
     lignes.append("\n💡 Les pronostics auto partent ~30 min avant chaque match. "
                   "Tu peux aussi m'ecrire un match pour une analyse immediate.")
-    bot.reply_to(message, "\n".join(lignes))
+    return "\n".join(lignes)
+
+
+def texte_foot_jour():
+    foot = get_matchs_foot()
+    if not foot:
+        return ("⚽ FOOT - aucun match trouve aujourd'hui.\n"
+                "(Les grandes ligues et competitions internationales sont suivies.)")
+    lignes = ["⚽ MATCHS DE FOOT DU JOUR (heure de Paris)\n"]
+    for m in foot:
+        lignes.append(f'{heure_fr(m["heure"])} - {m["match"]} ({m["ligue"]})')
+    lignes.append("\n💡 Ecris-moi un match (ex: 'Real Madrid Barcelone') "
+                  "pour son analyse complete.")
+    return "\n".join(lignes)
+
+
+def texte_tennis_jour():
+    tennis = get_matchs_tennis()
+    if not tennis:
+        return ("🎾 TENNIS - aucun match trouve aujourd'hui.\n"
+                "(Si des matchs ont lieu, verifie que la cle TENNIS_API_KEY "
+                "est bien configuree.)")
+    lignes = ["🎾 MATCHS DE TENNIS DU JOUR (heure de Paris)\n"]
+    for m in tennis:
+        lignes.append(f'{heure_fr(m["heure"])} - {m["match"]} ({m["tournoi"]})')
+    lignes.append("\n💡 Ecris-moi un match (ex: 'Sinner Alcaraz') "
+                  "pour son analyse complete.")
+    return "\n".join(lignes)
+
+
+def cmd_matchs(message):
+    bot.reply_to(message, texte_matchs_jour())
+
+
+@bot.message_handler(commands=["foot"])
+def cmd_foot(message):
+    bot.reply_to(message, texte_foot_jour())
+
+
+@bot.message_handler(commands=["tennis"])
+def cmd_tennis(message):
+    bot.reply_to(message, texte_tennis_jour())
 
 
 @bot.message_handler(func=lambda m: True)
