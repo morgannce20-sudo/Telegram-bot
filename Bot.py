@@ -1426,13 +1426,30 @@ def clic_courbe(call):
 
 
 @bot.message_handler(commands=["matchs"])
+def heure_fr(heure_utc):
+    """Convertit 'HH:MM' UTC en heure de Paris (UTC+2 en ete, +1 en hiver).
+    Approximation simple : on considere l'heure d'ete d'avril a octobre."""
+    try:
+        h, m = heure_utc.split(":")
+        mois = datetime.utcnow().month
+        decalage = 2 if 4 <= mois <= 10 else 1
+        h_fr = (int(h) + decalage) % 24
+        return f"{h_fr:02d}:{m}"
+    except (ValueError, AttributeError):
+        return heure_utc
+
+
 def cmd_matchs(message):
     foot = get_matchs_foot()
     tennis = get_matchs_tennis()
-    lignes = ["MATCHS DU JOUR\n", "FOOT :"]
-    lignes += [f'{m["heure"]} - {m["match"]} ({m["ligue"]})' for m in foot] or ["  aucun"]
-    lignes.append("\nTENNIS :")
-    lignes += [f'{m["heure"]} - {m["match"]} ({m["tournoi"]})' for m in tennis] or ["  aucun"]
+    lignes = ["MATCHS DU JOUR (heure de Paris)\n", "⚽ FOOT :"]
+    lignes += [f'{heure_fr(m["heure"])} - {m["match"]} ({m["ligue"]})'
+               for m in foot] or ["  aucun"]
+    lignes.append("\n🎾 TENNIS :")
+    lignes += [f'{heure_fr(m["heure"])} - {m["match"]} ({m["tournoi"]})'
+               for m in tennis] or ["  aucun"]
+    lignes.append("\n💡 Les pronostics auto partent ~30 min avant chaque match. "
+                  "Tu peux aussi m'ecrire un match pour une analyse immediate.")
     bot.reply_to(message, "\n".join(lignes))
 
 
@@ -1566,9 +1583,11 @@ def marquer_envoye(cle):
 
 
 def minutes_avant_match(heure_str):
-    """Retourne le nombre de minutes entre maintenant et l'heure du match.
+    """Retourne le nombre de minutes entre maintenant (UTC) et l'heure du match.
 
     heure_str est au format 'HH:MM' (UTC, tel que renvoye par l'API).
+    Gere le cas ou le match est juste apres minuit (sinon on aurait un
+    nombre de minutes tres negatif et le match serait ignore a tort).
     """
     try:
         maintenant = datetime.utcnow()
@@ -1576,6 +1595,10 @@ def minutes_avant_match(heure_str):
         debut = maintenant.replace(hour=int(h), minute=int(m),
                                    second=0, microsecond=0)
         delta = (debut - maintenant).total_seconds() / 60.0
+        # Si le match parait etre plus de 12h dans le passe, c'est qu'il est
+        # en realite demain (passage de minuit) : on ajoute 24h.
+        if delta < -720:
+            delta += 24 * 60
         return delta
     except (ValueError, AttributeError):
         return None
@@ -1607,8 +1630,11 @@ def verifier_et_envoyer():
         minutes = minutes_avant_match(m["heure"])
         if minutes is None:
             continue
-        # On envoie si le match commence dans MINUTES_AVANT a MINUTES_AVANT+FENETRE.
-        if MINUTES_AVANT <= minutes < MINUTES_AVANT + FENETRE_MINUTES:
+        # Fenetre tolerante : on envoie tant que le match commence dans 5 a 40
+        # minutes. Comme chaque match n'est notifie qu'une seule fois (memoire
+        # MongoDB), si un cycle de 5 min saute (Render endormi), le cycle
+        # suivant rattrape l'alerte au lieu de la perdre.
+        if 5 <= minutes <= MINUTES_AVANT + FENETRE_MINUTES:
             for abonne in liste_abonnes():
                 # Cle unique par abonne ET par match : chacun le recoit une fois.
                 cle = f'{aujourd_hui}_{abonne}_{m["sport"]}_{m["match"]}'
