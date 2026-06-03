@@ -25,6 +25,9 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 SEARCH_API_KEY = os.environ.get("SEARCH_API_KEY")
 FOOTBALL_API_KEY = os.environ.get("FOOTBALL_API_KEY")
 TENNIS_API_KEY = os.environ.get("TENNIS_API_KEY")
+# Cle football-data.org (couvre la saison en cours sur le plan gratuit).
+# Si presente, le bot l'utilise en PRIORITE pour le foot.
+FOOTDATA_API_KEY = os.environ.get("FOOTDATA_API_KEY")
 MONGODB_URL = os.environ.get("MONGODB_URL")
 CAPITAL_INITIAL = 100.0
 SAISON_FOOT = os.environ.get("SAISON_FOOT", "2025")
@@ -410,8 +413,31 @@ def regler_pari(pari, gagne):
 def score_match_foot(nom_match):
     """Cherche le score final d'un match de foot du jour via l'API.
 
-    Renvoie (buts_domicile, buts_exterieur) ou None si introuvable / non termine.
+    Renvoie (buts_domicile, buts_exterieur, nom_dom, nom_ext) ou None.
     """
+    # Priorite football-data.org.
+    if FOOTDATA_API_KEY:
+        try:
+            r = requests.get(
+                "https://api.football-data.org/v4/matches",
+                headers={"X-Auth-Token": FOOTDATA_API_KEY},
+                params={"dateFrom": datetime.now().strftime("%Y-%m-%d"),
+                        "dateTo": datetime.now().strftime("%Y-%m-%d")},
+                timeout=15,
+            )
+            for m in r.json().get("matches", []):
+                dom = m["homeTeam"]["name"]
+                ext = m["awayTeam"]["name"]
+                if m.get("status") == "FINISHED" and (
+                        dom.lower() in nom_match.lower()
+                        or ext.lower() in nom_match.lower()):
+                    ft = m["score"]["fullTime"]
+                    return (ft["home"], ft["away"], dom, ext)
+            return None
+        except (requests.RequestException, ValueError, KeyError) as e:
+            log.error("score_match_foot football-data : %s", e)
+            return None
+
     if not FOOTBALL_API_KEY:
         return None
     try:
@@ -1090,11 +1116,37 @@ def parser_analyse(texte):
 # Recuperation des matchs
 # ---------------------------------------------------------------------------
 def get_matchs_foot():
+    # Priorite a football-data.org si la cle est presente (saison en cours OK).
+    if FOOTDATA_API_KEY:
+        try:
+            r = requests.get(
+                "https://api.football-data.org/v4/matches",
+                headers={"X-Auth-Token": FOOTDATA_API_KEY},
+                params={"dateFrom": datetime.now().strftime("%Y-%m-%d"),
+                        "dateTo": datetime.now().strftime("%Y-%m-%d")},
+                timeout=15,
+            )
+            log.info("API foot (football-data) HTTP : %s", r.status_code)
+            data = r.json()
+            matchs = []
+            for m in data.get("matches", []):
+                try:
+                    matchs.append({
+                        "heure": m["utcDate"][11:16],
+                        "match": f'{m["homeTeam"]["name"]} vs {m["awayTeam"]["name"]}',
+                        "ligue": m["competition"]["name"],
+                    })
+                except (KeyError, TypeError):
+                    continue
+            log.info("get_matchs_foot (football-data) : %d matchs", len(matchs))
+            return matchs
+        except (requests.RequestException, ValueError, KeyError) as e:
+            log.error("get_matchs_foot football-data : %s", e)
+            return []
+
+    # Repli sur l'ancienne API api-sports si pas de cle football-data.
     if not FOOTBALL_API_KEY:
         return []
-    # Ligues de clubs : PL(39) Liga(140) SerieA(135) Bundesliga(78) L1(61)
-    # ChampionsL(2) EuropaL(3). Internationaux : CdM(1) Euro(4) Nations(5)
-    # amicaux(10) + qualifs CdM par confederation (29,30,31,32,33,34).
     ligues = "1,2,3,4,5,10,29,30,31,32,33,34,39,61,78,135,140"
     try:
         r = requests.get(
@@ -1190,11 +1242,35 @@ def diagnostic_complet():
     lignes.append(f"  Groq (IA) : {'OK' if GROQ_API_KEY else 'MANQUANTE ❌'}")
     lignes.append(f"  Foot : {'OK' if FOOTBALL_API_KEY else 'MANQUANTE ❌'}")
     lignes.append(f"  Tennis : {'OK' if TENNIS_API_KEY else 'MANQUANTE ❌'}")
-    lignes.append(f"  Recherche web : {'OK' if SEARCH_API_KEY else 'MANQUANTE ❌'}\n")
+    lignes.append(f"  Recherche web : {'OK' if SEARCH_API_KEY else 'MANQUANTE ❌'}")
+    lignes.append(f"  Foot (football-data) : {'OK' if FOOTDATA_API_KEY else 'absente'}\n")
 
     # 2. Test API FOOT (appel reel).
     lignes.append("TEST API FOOT :")
-    if FOOTBALL_API_KEY:
+    if FOOTDATA_API_KEY:
+        try:
+            r = requests.get(
+                "https://api.football-data.org/v4/matches",
+                headers={"X-Auth-Token": FOOTDATA_API_KEY},
+                params={"dateFrom": datetime.now().strftime("%Y-%m-%d"),
+                        "dateTo": datetime.now().strftime("%Y-%m-%d")},
+                timeout=12,
+            )
+            try:
+                data = r.json()
+            except ValueError:
+                data = {}
+            nb = len(data.get("matches", []))
+            lignes.append(f"  football-data : HTTP {r.status_code} | {nb} matchs")
+            if r.status_code == 403:
+                lignes.append("    ❌ cle invalide ou competition hors plan gratuit")
+            elif r.status_code == 429:
+                lignes.append("    ⚠️ quota football-data depasse (attends un peu)")
+            elif nb == 0 and r.status_code == 200:
+                lignes.append("    ℹ️ 0 match aujourd'hui dans les competitions du plan")
+        except Exception as e:
+            lignes.append(f"  ❌ erreur : {e}")
+    elif FOOTBALL_API_KEY:
         try:
             r = requests.get(
                 "https://v3.football.api-sports.io/fixtures",
@@ -1206,16 +1282,13 @@ def diagnostic_complet():
             data = r.json()
             nb = len(data.get("response", []))
             err = data.get("errors")
-            lignes.append(f"  HTTP {r.status_code} | {nb} matchs trouves")
+            lignes.append(f"  api-sports : HTTP {r.status_code} | {nb} matchs")
             if err:
                 lignes.append(f"  ⚠️ erreurs API : {err}")
-            if nb == 0 and not err:
-                lignes.append("  ℹ️ 0 match : soit pas de match aujourd'hui dans "
-                              "ces ligues, soit saison ({}) a ajuster.".format(SAISON_FOOT))
         except Exception as e:
             lignes.append(f"  ❌ erreur : {e}")
     else:
-        lignes.append("  cle foot manquante")
+        lignes.append("  aucune cle foot configuree")
     lignes.append("")
 
     # 3. Test API TENNIS (ATP + WTA).
