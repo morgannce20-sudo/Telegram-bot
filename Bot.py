@@ -1177,6 +1177,103 @@ def get_matchs_tennis():
 # ---------------------------------------------------------------------------
 # Handlers Telegram
 # ---------------------------------------------------------------------------
+def diagnostic_complet():
+    """Teste toutes les briques du bot et renvoie un rapport clair."""
+    lignes = ["🔧 DIAGNOSTIC DU BOT\n"]
+    maintenant = datetime.utcnow()
+    lignes.append(f"Heure serveur (UTC) : {maintenant.strftime('%Y-%m-%d %H:%M')}")
+    lignes.append(f"Date recherchee : {datetime.now().strftime('%Y-%m-%d')}\n")
+
+    # 1. Cles API presentes ?
+    lignes.append("CLES API :")
+    lignes.append(f"  Telegram : {'OK' if TELEGRAM_TOKEN else 'MANQUANTE ❌'}")
+    lignes.append(f"  Groq (IA) : {'OK' if GROQ_API_KEY else 'MANQUANTE ❌'}")
+    lignes.append(f"  Foot : {'OK' if FOOTBALL_API_KEY else 'MANQUANTE ❌'}")
+    lignes.append(f"  Tennis : {'OK' if TENNIS_API_KEY else 'MANQUANTE ❌'}")
+    lignes.append(f"  Recherche web : {'OK' if SEARCH_API_KEY else 'MANQUANTE ❌'}\n")
+
+    # 2. Test API FOOT (appel reel).
+    lignes.append("TEST API FOOT :")
+    if FOOTBALL_API_KEY:
+        try:
+            r = requests.get(
+                "https://v3.football.api-sports.io/fixtures",
+                headers={"x-apisports-key": FOOTBALL_API_KEY},
+                params={"date": datetime.now().strftime("%Y-%m-%d"),
+                        "league": "1,2,3,4,5,39,61,78,135,140", "season": SAISON_FOOT},
+                timeout=12,
+            )
+            data = r.json()
+            nb = len(data.get("response", []))
+            err = data.get("errors")
+            lignes.append(f"  HTTP {r.status_code} | {nb} matchs trouves")
+            if err:
+                lignes.append(f"  ⚠️ erreurs API : {err}")
+            if nb == 0 and not err:
+                lignes.append("  ℹ️ 0 match : soit pas de match aujourd'hui dans "
+                              "ces ligues, soit saison ({}) a ajuster.".format(SAISON_FOOT))
+        except Exception as e:
+            lignes.append(f"  ❌ erreur : {e}")
+    else:
+        lignes.append("  cle foot manquante")
+    lignes.append("")
+
+    # 3. Test API TENNIS (ATP + WTA).
+    lignes.append("TEST API TENNIS :")
+    if TENNIS_API_KEY:
+        host = "tennis-api-atp-wta-itf.p.rapidapi.com"
+        headers = {"X-RapidAPI-Key": TENNIS_API_KEY, "X-RapidAPI-Host": host}
+        date = datetime.now().strftime("%Y-%m-%d")
+        for tour in ("atp", "wta"):
+            try:
+                r = requests.get(
+                    f"https://{host}/tennis/v2/{tour}/fixtures/{date}",
+                    headers=headers, params={"include": "tournament"}, timeout=12,
+                )
+                try:
+                    data = r.json()
+                    nb = len(data if isinstance(data, list) else data.get("data", []))
+                except ValueError:
+                    nb = 0
+                lignes.append(f"  {tour.upper()} : HTTP {r.status_code} | {nb} matchs")
+                if r.status_code == 401:
+                    lignes.append("    ❌ cle RapidAPI invalide")
+                elif r.status_code == 403:
+                    lignes.append("    ❌ abonnement/plan non actif sur RapidAPI")
+                elif r.status_code == 429:
+                    lignes.append("    ⚠️ quota RapidAPI depasse")
+            except Exception as e:
+                lignes.append(f"  {tour.upper()} : ❌ erreur {e}")
+    else:
+        lignes.append("  cle tennis manquante")
+    lignes.append("")
+
+    # 4. Base de donnees + abonnes.
+    lignes.append("BASE DE DONNEES :")
+    try:
+        mongo_client.admin.command("ping")
+        nb_ab = collection_abonnes.count_documents({"actif": True})
+        nb_paris = collection_paris.count_documents({})
+        lignes.append(f"  MongoDB OK | {nb_ab} abonne(s) actif(s) | {nb_paris} pari(s)")
+    except Exception as e:
+        lignes.append(f"  ❌ MongoDB : {e}")
+    lignes.append("")
+
+    # 5. Verdict.
+    lignes.append("💡 LECTURE :")
+    lignes.append("- Si tennis affiche HTTP 200 mais 0 match : pas de match ATP/WTA")
+    lignes.append("  aujourd'hui, ou date serveur decalee.")
+    lignes.append("- Si HTTP 401/403 : probleme de cle ou d'abonnement RapidAPI.")
+    lignes.append("- Si foot 0 match : verifie la saison SAISON_FOOT dans Render.")
+    return "\n".join(lignes)
+
+
+@bot.message_handler(commands=["diag", "es"])
+def cmd_diag(message):
+    bot.reply_to(message, "🔧 Diagnostic en cours, patiente quelques secondes...")
+    bot.send_message(message.chat.id, diagnostic_complet())
+
+
 @bot.message_handler(commands=["start"])
 def cmd_start(message):
     # On enregistre l'utilisateur comme abonne aux pronostics automatiques.
