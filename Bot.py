@@ -1117,26 +1117,63 @@ def get_matchs_foot():
 
 def get_matchs_tennis():
     if not TENNIS_API_KEY:
+        log.error("get_matchs_tennis : TENNIS_API_KEY manquante")
         return []
     try:
         r = requests.get(
             "https://v1.tennis.api-sports.io/games",
             headers={"x-apisports-key": TENNIS_API_KEY},
             params={"date": datetime.now().strftime("%Y-%m-%d")},
-            timeout=10,
+            timeout=12,
         )
+        log.info("API tennis statut HTTP : %s", r.status_code)
         data = r.json()
+
+        # L'API renvoie ses erreurs dans 'errors' : on les logue pour diagnostic.
+        erreurs = data.get("errors")
+        if erreurs:
+            log.error("API tennis erreurs : %s", erreurs)
+
+        reponse = data.get("response", [])
+        log.info("API tennis : %d matchs bruts renvoyes", len(reponse))
+
+        def _nom(bloc):
+            """Recupere un nom de joueur quel que soit le format de l'API."""
+            if isinstance(bloc, dict):
+                return (bloc.get("name") or bloc.get("full_name")
+                        or bloc.get("player") or "?")
+            return str(bloc) if bloc else "?"
+
         matchs = []
-        for m in data.get("response", []):
+        for m in reponse:
             try:
+                # Les joueurs peuvent etre sous 'players', 'teams', ou 'home/away'.
+                bloc = m.get("players") or m.get("teams") or {}
+                home = bloc.get("home") or bloc.get("player1") or m.get("home")
+                away = bloc.get("away") or bloc.get("player2") or m.get("away")
+                j1, j2 = _nom(home), _nom(away)
+                if j1 == "?" and j2 == "?":
+                    continue
+
+                # La date peut etre sous 'date', 'time', ou 'timestamp'.
+                date_str = m.get("date") or m.get("time") or ""
+                heure = date_str[11:16] if len(date_str) >= 16 else "00:00"
+
+                tournoi = "Tournoi inconnu"
+                t = m.get("tournament") or m.get("league") or {}
+                if isinstance(t, dict):
+                    tournoi = t.get("name", tournoi)
+
                 matchs.append({
-                    "heure": m["date"][11:16],
-                    "match": f'{m["players"]["home"]["name"]} vs {m["players"]["away"]["name"]}',
-                    "tournoi": m.get("tournament", {}).get("name", "Tournoi inconnu"),
+                    "heure": heure,
+                    "match": f"{j1} vs {j2}",
+                    "tournoi": tournoi,
                     "surface": m.get("surface", "Inconnue"),
                 })
-            except (KeyError, TypeError):
+            except (KeyError, TypeError) as e:
+                log.error("get_matchs_tennis parse : %s", e)
                 continue
+        log.info("get_matchs_tennis : %d matchs exploitables", len(matchs))
         return matchs
     except (requests.RequestException, ValueError) as e:
         log.error("get_matchs_tennis : %s", e)
